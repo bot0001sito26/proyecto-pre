@@ -19,7 +19,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
             fetchCuotas();
             setCobradorLocal(prestamo.cobrador || 'principal');
         }
-        // SOLUCIÓN AL PARPADEO: Solo dependemos del ID, no del objeto completo
     }, [prestamo?.id]);
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
@@ -48,12 +47,32 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         setCargando(false);
     };
 
-    const cambiarEstadoCuota = async (cuota) => {
+    // 1. Prepara el nuevo estado y pide confirmación
+    const cambiarEstadoCuota = (cuota) => {
         if (cuota.estado_cobro === 'renovado' || prestamo.estado !== 'activo') return;
+
         let nuevoEstado = 'pagado';
+        let textoAccion = 'PAGADA';
+
         if (cuota.estado_cobro === 'pagado') {
             nuevoEstado = cuota.fecha_cobro < hoyStr ? 'no_pago' : 'pendiente';
+            textoAccion = nuevoEstado === 'no_pago' ? 'NO PAGO (Atrasada)' : 'PENDIENTE';
         }
+
+        const dia = cuota.fecha_cobro.split('-')[2];
+
+        setModalConf({
+            isOpen: true,
+            titulo: 'Confirmar Cuota',
+            mensaje: `¿Estás seguro de marcar la cuota del día ${dia} como ${textoAccion}?`,
+            accion: () => ejecutarCambioEstado(cuota, nuevoEstado)
+        });
+    };
+
+    // 2. Ejecuta el cambio visual y en BD tras confirmar
+    const ejecutarCambioEstado = async (cuota, nuevoEstado) => {
+        setModalConf({ isOpen: false, accion: null }); // Cierra el modal
+
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
 
         // Actualización optimista (cambia el color instantáneamente en pantalla)
@@ -63,9 +82,9 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         const { error } = await supabase.from('historial_pagos').update({ estado_cobro: nuevoEstado, monto_recibido: monto }).eq('id', cuota.id);
 
         if (!error && onUpdate) {
-            onUpdate(); // Actualiza el dashboard por detrás sin recargar el modal
+            onUpdate();
         } else if (error) {
-            fetchCuotas(); // Si falla el guardado, recupera el estado real de la base
+            fetchCuotas();
         }
     };
 
@@ -134,7 +153,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                     <span className="w-20 text-neutral-400">Cliente:</span>
                                     <span className="truncate">{prestamo.clientes?.nombre}</span>
                                 </div>
-                                {/* AQUÍ AGREGAMOS LA FECHA DE LA CARTULINA */}
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
                                     <span className="w-20 text-neutral-400">Fecha:</span>
                                     <span>{prestamo.fecha_inicio || 'N/A'}</span>
