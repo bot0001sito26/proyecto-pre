@@ -19,7 +19,8 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
             fetchCuotas();
             setCobradorLocal(prestamo.cobrador || 'principal');
         }
-    }, [prestamo]);
+        // SOLUCIÓN AL PARPADEO: Solo dependemos del ID, no del objeto completo
+    }, [prestamo?.id]);
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
         setCobradorLocal(nuevoCobrador);
@@ -54,10 +55,18 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
             nuevoEstado = cuota.fecha_cobro < hoyStr ? 'no_pago' : 'pendiente';
         }
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
+
+        // Actualización optimista (cambia el color instantáneamente en pantalla)
         setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto } : c));
+
+        // Guardado en la base de datos en segundo plano
         const { error } = await supabase.from('historial_pagos').update({ estado_cobro: nuevoEstado, monto_recibido: monto }).eq('id', cuota.id);
-        if (!error && onUpdate) onUpdate();
-        else if (error) fetchCuotas();
+
+        if (!error && onUpdate) {
+            onUpdate(); // Actualiza el dashboard por detrás sin recargar el modal
+        } else if (error) {
+            fetchCuotas(); // Si falla el guardado, recupera el estado real de la base
+        }
     };
 
     const guardarNota = async (cuotaId, nuevaNota) => {
@@ -124,6 +133,11 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
                                     <span className="w-20 text-neutral-400">Cliente:</span>
                                     <span className="truncate">{prestamo.clientes?.nombre}</span>
+                                </div>
+                                {/* AQUÍ AGREGAMOS LA FECHA DE LA CARTULINA */}
+                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
+                                    <span className="w-20 text-neutral-400">Fecha:</span>
+                                    <span>{prestamo.fecha_inicio || 'N/A'}</span>
                                 </div>
                             </div>
 
@@ -196,7 +210,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                     <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                                     Historial de Motivos
                                 </h3>
-                                {/* AQUI EL CONTENEDOR CON LIMITE DE ALTURA Y SCROLL Y */}
                                 <div className="space-y-2 max-h-32 overflow-y-auto pr-1">
                                     {cuotasConNotas.map(c => (
                                         <div key={c.id} className="flex flex-col border-b border-gray-100 pb-2 last:border-0 last:pb-0">
