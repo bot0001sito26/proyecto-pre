@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { generarReporteRutaPDF } from '../../utils/generarPDF';
 import CartulinaModal from '../../components/CartulinaModal';
+import LibretaMensualModal from '../../components/LibretaMensualModal'; // <-- IMPORTAMOS LA NUEVA LIBRETA
 
 export default function CalendarioCobros() {
     const { user } = useAuth();
@@ -16,7 +17,7 @@ export default function CalendarioCobros() {
     const hoyStr = getFechaLocal();
     const [fecha, setFecha] = useState(hoyStr);
     const [modalidadActiva, setModalidadActiva] = useState('diario');
-    const [cobradorActivo, setCobradorActivo] = useState('todos'); // 'todos', 'principal', 'ayudante'
+    const [cobradorActivo, setCobradorActivo] = useState('todos');
 
     const [pagos, setPagos] = useState(() => {
         try {
@@ -41,10 +42,10 @@ export default function CalendarioCobros() {
             .select(`
             id, fecha_cobro, estado_cobro, monto_recibido, notas,
             prestamos!inner (
-                id, valor_cuota, prestamista_id, estado, monto_total, frecuencia, fecha_inicio, cobrador,
+                id, valor_cuota, prestamista_id, estado, monto_total, frecuencia, fecha_inicio, cobrador, tipo_prestamo, 
                 clientes ( id, nombre, telefono )
             )
-        `)
+        `) // <--- AGREGAMOS tipo_prestamo AQUÍ
             .eq('prestamos.prestamista_id', user.id)
             .eq('prestamos.estado', 'activo')
             .eq('fecha_cobro', fecha)
@@ -57,7 +58,6 @@ export default function CalendarioCobros() {
         setCargando(false);
     };
 
-
     const pagosFiltrados = useMemo(() => {
         const filtrados = pagos.filter(p => {
             const coincideModalidad = p.prestamos.frecuencia === modalidadActiva;
@@ -65,7 +65,6 @@ export default function CalendarioCobros() {
             const coincideCobrador = cobradorActivo === 'todos' || cobradorReal === cobradorActivo;
             return coincideModalidad && coincideCobrador;
         });
-
 
         return filtrados.sort((a, b) => {
             if (a.estado_cobro === 'pagado' && b.estado_cobro !== 'pagado') return 1;
@@ -86,12 +85,15 @@ export default function CalendarioCobros() {
         const prestamoFormateado = {
             id: pagoDelDia.prestamos.id,
             monto_total: pagoDelDia.prestamos.monto_total,
+            monto_capital: pagoDelDia.prestamos.monto_total, // Útil para la libreta mensual
             frecuencia: pagoDelDia.prestamos.frecuencia,
             fecha_inicio: pagoDelDia.prestamos.fecha_inicio,
             estado: pagoDelDia.prestamos.estado,
             valor_cuota: pagoDelDia.prestamos.valor_cuota,
             cliente_id: pagoDelDia.prestamos.clientes.id,
-            clientes: pagoDelDia.prestamos.clientes
+            clientes: pagoDelDia.prestamos.clientes,
+            cobrador: pagoDelDia.prestamos.cobrador,
+            tipo_prestamo: pagoDelDia.prestamos.tipo_prestamo // <--- LÍNEA VITAL QUE FALTABA
         };
         setPrestamoSeleccionado(prestamoFormateado);
     };
@@ -232,13 +234,22 @@ export default function CalendarioCobros() {
             </div>
 
             {prestamoSeleccionado && (
-                <CartulinaModal
-                    prestamo={prestamoSeleccionado}
-                    onClose={() => setPrestamoSeleccionado(null)}
-                    onRenovar={renovarPrestamo}
-                    onFinalizar={finalizarPrestamo}
-                    onUpdate={fetchPagos}
-                />
+                prestamoSeleccionado.tipo_prestamo === 'mensual_interes' ? (
+                    <LibretaMensualModal
+                        prestamo={prestamoSeleccionado}
+                        onClose={() => setPrestamoSeleccionado(null)}
+                        onFinalizar={finalizarPrestamo}
+                        onUpdate={fetchPagos}
+                    />
+                ) : (
+                    <CartulinaModal
+                        prestamo={prestamoSeleccionado}
+                        onClose={() => setPrestamoSeleccionado(null)}
+                        onRenovar={renovarPrestamo}
+                        onFinalizar={finalizarPrestamo}
+                        onUpdate={fetchPagos}
+                    />
+                )
             )}
         </div>
     );

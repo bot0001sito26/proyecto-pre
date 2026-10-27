@@ -3,6 +3,7 @@ import supabase from '../../supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import CartulinaModal from '../../components/CartulinaModal';
+import LibretaMensualModal from '../../components/LibretaMensualModal'; // CORRECCIÓN 1: Importado
 import ClienteAcordeon from '../../components/ClienteAcordeon';
 import { generarReporteCarteraPDF } from '../../utils/generarPDF';
 
@@ -28,22 +29,24 @@ export default function ListaPrestamos() {
     const [pagosRango, setPagosRango] = useState(() => {
         try { return JSON.parse(sessionStorage.getItem('anubis_pagos_rango')) || []; } catch { return []; }
     });
+    // NUEVO ESTADO: Para guardar los intereses cobrados de los préstamos mensuales
+    const [movimientosRango, setMovimientosRango] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem('anubis_movimientos_rango')) || []; } catch { return []; }
+    });
 
-    // Lo inicializamos en true para asegurarnos de que el modal espere a la carga
     const [cargando, setCargando] = useState(true);
     const [prestamoSeleccionado, setPrestamoSeleccionado] = useState(null);
 
-    // EFECTO CORREGIDO: Espera a que termine de cargar para abrir el modal
+    // SOLUCIÓN 1: Limpiar el estado usando navigate de React Router
     useEffect(() => {
         if (!cargando && location.state?.abrirPrestamoId && prestamos.length > 0) {
             const prestamoParaAbrir = prestamos.find(p => p.id === location.state.abrirPrestamoId);
             if (prestamoParaAbrir) {
                 setPrestamoSeleccionado(prestamoParaAbrir);
-                // Limpiar la URL para evitar bucles al refrescar la página
-                window.history.replaceState({}, document.title);
+                navigate(location.pathname, { replace: true, state: {} });
             }
         }
-    }, [cargando, prestamos, location.state]);
+    }, [cargando, prestamos, location.state, navigate, location.pathname]);
 
     useEffect(() => {
         setPagina(1);
@@ -56,11 +59,12 @@ export default function ListaPrestamos() {
     const fetchDatosDashboard = async () => {
         setCargando(true);
 
+        // CORRECCIÓN 3: Agregado tipo_prestamo y cobrador al select
         const { data: dataPrestamos } = await supabase
             .from('prestamos')
             .select(`
                 id, monto_capital, interes_total, monto_total, saldo_pendiente, 
-                frecuencia, valor_cuota, fecha_inicio, estado, cliente_id,
+                frecuencia, valor_cuota, fecha_inicio, estado, cliente_id, tipo_prestamo, cobrador,
                 clientes ( id, nombre, telefono )
             `)
             .eq('prestamista_id', user.id)
@@ -74,6 +78,15 @@ export default function ListaPrestamos() {
             .gte('fecha_cobro', fechaDesde)
             .lte('fecha_cobro', fechaHasta);
 
+        // CORRECCIÓN 5: Traer ganancias de los préstamos mensuales (pago_interes)
+        const { data: dataMovimientos } = await supabase
+            .from('movimientos_mensuales')
+            .select(`monto, prestamos!inner ( prestamista_id )`)
+            .eq('prestamos.prestamista_id', user.id)
+            .eq('tipo', 'pago_interes')
+            .gte('fecha', fechaDesde)
+            .lte('fecha', fechaHasta);
+
         if (dataPrestamos) {
             setPrestamos(dataPrestamos);
             sessionStorage.setItem('anubis_prestamos', JSON.stringify(dataPrestamos));
@@ -82,6 +95,10 @@ export default function ListaPrestamos() {
             setPagosRango(dataPagos);
             sessionStorage.setItem('anubis_pagos_rango', JSON.stringify(dataPagos));
         }
+        if (dataMovimientos) {
+            setMovimientosRango(dataMovimientos);
+            sessionStorage.setItem('anubis_movimientos_rango', JSON.stringify(dataMovimientos));
+        }
         setCargando(false);
     };
 
@@ -89,17 +106,21 @@ export default function ListaPrestamos() {
         return prestamos.filter(p => p.fecha_inicio >= fechaDesde && p.fecha_inicio <= fechaHasta);
     }, [prestamos, fechaDesde, fechaHasta]);
 
+    // CORRECCIÓN 4: Agregado [prestamos] como dependencia
     const todosLosActivos = useMemo(() => {
         return prestamos.filter(p => p.estado === 'activo');
     }, [prestamos]);
 
-    const capitalPrestadoRango = useMemo(() => {
-        return prestamosEnRango.filter(p => p.estado === 'activo').reduce((sum, p) => sum + Number(p.monto_capital), 0);
-    }, [prestamosEnRango]);
+    // El capital prestado ahora siempre suma TODOS los activos
+    const capitalActivoTotal = useMemo(() => {
+        return todosLosActivos.reduce((sum, p) => sum + Number(p.monto_capital), 0);
+    }, [todosLosActivos]);
 
     const interesGanadoRango = useMemo(() => {
         const prestamosContabilizados = new Set();
         let ganancia = 0;
+
+        // 1. Ganancia de cuotas fijas (completadas/renovadas)
         pagosRango.forEach(pago => {
             const prestamo = pago.prestamos;
             if (prestamo.estado === 'completado' || prestamo.estado === 'renovado') {
@@ -109,8 +130,14 @@ export default function ListaPrestamos() {
                 }
             }
         });
+
+        // 2. Ganancia de préstamos mensuales (Pagos de Interés sueltos)
+        movimientosRango.forEach(mov => {
+            ganancia += Number(mov.monto);
+        });
+
         return ganancia;
-    }, [pagosRango]);
+    }, [pagosRango, movimientosRango]);
 
     const clientesAgrupados = useMemo(() => {
         const mapa = {};
@@ -131,8 +158,13 @@ export default function ListaPrestamos() {
 
     const finalizarPrestamo = async () => {
         await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0 }).eq('id', prestamoSeleccionado.id);
-        await supabase.from('historial_pagos').update({ estado_cobro: 'pagado', monto_recibido: prestamoSeleccionado.valor_cuota, fecha_cobro: hoyStr })
-            .eq('prestamo_id', prestamoSeleccionado.id).in('estado_cobro', ['pendiente', 'no_pago']);
+
+        // Finalizamos los pagos pendientes si es de cuota fija
+        if (prestamoSeleccionado.tipo_prestamo === 'cuota_fija') {
+            await supabase.from('historial_pagos').update({ estado_cobro: 'pagado', monto_recibido: prestamoSeleccionado.valor_cuota, fecha_cobro: hoyStr })
+                .eq('prestamo_id', prestamoSeleccionado.id).in('estado_cobro', ['pendiente', 'no_pago']);
+        }
+
         setPrestamoSeleccionado(null);
         fetchDatosDashboard();
     };
@@ -177,11 +209,11 @@ export default function ListaPrestamos() {
 
                     <div className="grid grid-cols-2 gap-3 text-center">
                         <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
-                            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-1">Capital Prestado</p>
-                            <p className="text-xl font-black text-neutral-800">${capitalPrestadoRango.toFixed(2)}</p>
+                            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-1">Capital Total Activo</p>
+                            <p className="text-xl font-black text-neutral-800">${capitalActivoTotal.toFixed(2)}</p>
                         </div>
                         <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 shadow-sm">
-                            <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1">Ganancia Real</p>
+                            <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1">Ganancia en Fechas</p>
                             <p className="text-xl font-black text-amber-600">${interesGanadoRango.toFixed(2)}</p>
                         </div>
                     </div>
@@ -220,13 +252,22 @@ export default function ListaPrestamos() {
             </div>
 
             {prestamoSeleccionado && (
-                <CartulinaModal
-                    prestamo={prestamoSeleccionado}
-                    onClose={() => setPrestamoSeleccionado(null)}
-                    onRenovar={renovarPrestamo}
-                    onFinalizar={finalizarPrestamo}
-                    onUpdate={fetchDatosDashboard}
-                />
+                prestamoSeleccionado.tipo_prestamo === 'mensual_interes' ? (
+                    <LibretaMensualModal
+                        prestamo={prestamoSeleccionado}
+                        onClose={() => setPrestamoSeleccionado(null)}
+                        onFinalizar={finalizarPrestamo}
+                        onUpdate={fetchDatosDashboard} // CORRECCIÓN 2: Estaba fetchDatos
+                    />
+                ) : (
+                    <CartulinaModal
+                        prestamo={prestamoSeleccionado}
+                        onClose={() => setPrestamoSeleccionado(null)}
+                        onRenovar={renovarPrestamo}
+                        onFinalizar={finalizarPrestamo}
+                        onUpdate={fetchDatosDashboard} // CORRECCIÓN 2: Estaba fetchDatos
+                    />
+                )
             )}
         </div>
     );
