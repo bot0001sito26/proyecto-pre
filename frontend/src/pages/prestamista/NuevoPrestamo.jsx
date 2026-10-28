@@ -141,7 +141,7 @@ export default function NuevoPrestamo() {
 
             // Lógica de Renovación
             if (prestamoARenovar) {
-                await supabase.from('prestamos').update({ saldo_pendiente: 0, estado: 'renovado' }).eq('id', prestamoARenovar);
+                await supabase.from('prestamos').update({ saldo_pendiente: 0, estado: 'renovado', fecha_cierre: fechaInicio }).eq('id', prestamoARenovar);
                 const { data: prestamoViejo } = await supabase.from('prestamos').select('valor_cuota').eq('id', prestamoARenovar).single();
                 if (prestamoViejo) {
                     await supabase.from('historial_pagos')

@@ -36,6 +36,7 @@ export default function DashboardPrestamista() {
                 prestamos!inner ( id, valor_cuota, estado, clientes ( id, nombre ) )
             `)
             .eq('prestamos.estado', 'activo')
+            .neq('prestamos.tipo_prestamo', 'mensual_interes')
             .in('estado_cobro', ['pendiente', 'no_pago'])
             .lt('fecha_cobro', hoyStr)
             .order('fecha_cobro', { ascending: true });

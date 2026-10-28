@@ -146,7 +146,7 @@ export default function CalendarioCobros() {
     };
 
     const finalizarPrestamo = async () => {
-        await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0 }).eq('id', prestamoSeleccionado.id);
+        await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0, fecha_cierre: fecha }).eq('id', prestamoSeleccionado.id);
 
         await supabase.from('historial_pagos').update({
             estado_cobro: 'pagado',

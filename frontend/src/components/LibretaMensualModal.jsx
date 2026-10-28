@@ -24,11 +24,9 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
         }
     }, [prestamo?.id]);
 
-    // Algoritmo de cálculo de interés histórico
     useEffect(() => {
-        if (cargando || movimientos.length === 0 && !prestamo) return;
+        if (cargando || (movimientos.length === 0 && !prestamo)) return;
 
-        // Utilizamos monto_total como el capital original inicial
         const capitalOriginal = parseFloat(prestamo.monto_total);
         const fechaInicio = new Date(prestamo.fecha_inicio + 'T12:00:00');
         const hoyDate = new Date(hoyStr + 'T12:00:00');
@@ -37,32 +35,25 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
         let mesesTranscurridos = 0;
 
         let cursor = new Date(fechaInicio);
-        cursor.setMonth(cursor.getMonth() + 1); // Empezamos a evaluar desde el primer mes cumplido
+        cursor.setMonth(cursor.getMonth() + 1);
 
-        // Por cada mes que ya se cumplió hasta el día de hoy
         while (cursor <= hoyDate) {
             mesesTranscurridos++;
-
-            // Verificamos si en ESE momento histórico ya había hecho abonos a capital
             const abonosHastaEseMes = movimientos
                 .filter(m => m.tipo === 'abono_capital' && new Date(m.fecha + 'T12:00:00') <= cursor)
                 .reduce((sum, m) => sum + parseFloat(m.monto), 0);
 
-            // El interés del mes se calcula sobre el capital que debía en ese instante
             const capitalBaseDelMes = Math.max(0, capitalOriginal - abonosHastaEseMes);
             generado += (capitalBaseDelMes * 0.20);
-
             cursor.setMonth(cursor.getMonth() + 1);
         }
 
-        // Sumamos cuánto nos ha pagado de interés históricamente
         const pagado = movimientos
             .filter(m => m.tipo === 'pago_interes')
             .reduce((sum, m) => sum + parseFloat(m.monto), 0);
 
         const pendiente = generado - pagado;
 
-        // Calculamos la fecha del siguiente mes a cobrar
         const proxCorte = new Date(fechaInicio);
         proxCorte.setMonth(proxCorte.getMonth() + mesesTranscurridos + 1);
 
@@ -178,28 +169,32 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 </div>
                             </div>
 
-                            {/* NUEVA SECCIÓN DE INTERÉS ACUMULADO */}
+                            {/* SECCIÓN DE INTERÉS ACUMULADO (SIN PARPADEO) */}
                             <div className="grid grid-cols-2 gap-2 mb-3">
                                 <div className="bg-gray-100 p-2 rounded-lg border border-gray-200 text-center">
                                     <span className="block text-[9px] font-black uppercase text-gray-500">Transcurrido</span>
-                                    <span className="text-xs font-black text-gray-800">{calculos.meses} meses</span>
+                                    <span className="text-xs font-black text-gray-800">
+                                        {cargando ? '...' : `${calculos.meses} meses`}
+                                    </span>
                                 </div>
                                 <div className="bg-gray-100 p-2 rounded-lg border border-gray-200 text-center">
                                     <span className="block text-[9px] font-black uppercase text-gray-500">Próximo Corte</span>
-                                    <span className="text-xs font-black text-gray-800">{calculos.proximoCorte}</span>
+                                    <span className="text-xs font-black text-gray-800">
+                                        {cargando ? '...' : calculos.proximoCorte}
+                                    </span>
                                 </div>
                             </div>
 
-                            <div className={`p-3 rounded-xl border mb-4 text-center shadow-inner ${calculos.pendiente > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-green-50 border-green-200 text-green-800'}`}>
+                            <div className={`p-3 rounded-xl border mb-4 text-center shadow-inner transition-colors duration-300 ${cargando ? 'bg-gray-50 border-gray-200' : calculos.pendiente > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-green-50 border-green-200 text-green-800'}`}>
                                 <p className="text-[10px] font-black uppercase tracking-widest mb-1">
-                                    {calculos.pendiente > 0 ? ' Interés Atrasado (Pendiente)' : 'Interés Pendiente'}
+                                    {cargando ? 'Calculando...' : calculos.pendiente > 0 ? ' Interés Atrasado (Pendiente)' : 'Interés Pendiente'}
                                 </p>
                                 <p className="text-2xl font-black">
-                                    ${Math.max(0, calculos.pendiente).toFixed(2)}
+                                    ${cargando ? '0.00' : Math.max(0, calculos.pendiente).toFixed(2)}
                                 </p>
                                 <div className="text-[9px] font-bold mt-2 flex justify-center gap-4 text-neutral-600">
-                                    <span>Generado: <b className="text-neutral-900">${calculos.generado.toFixed(2)}</b></span>
-                                    <span>Pagado: <b className="text-neutral-900">${calculos.pagado.toFixed(2)}</b></span>
+                                    <span>Generado: <b className="text-neutral-900">${cargando ? '...' : calculos.generado.toFixed(2)}</b></span>
+                                    <span>Pagado: <b className="text-neutral-900">${cargando ? '...' : calculos.pagado.toFixed(2)}</b></span>
                                 </div>
                             </div>
 
@@ -208,7 +203,8 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 <div className="grid grid-cols-2 gap-2">
                                     <button
                                         onClick={() => setTipoAccion('abono_capital')}
-                                        className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'abono_capital' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'}`}
+                                        disabled={cargando}
+                                        className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'abono_capital' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 disabled:opacity-50'}`}
                                     >
                                         + Abono Capital
                                     </button>
@@ -217,7 +213,8 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                             setTipoAccion('pago_interes');
                                             if (calculos.pendiente > 0) setMontoAccion(calculos.pendiente.toFixed(2));
                                         }}
-                                        className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'pago_interes' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200'}`}
+                                        disabled={cargando}
+                                        className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'pago_interes' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200 disabled:opacity-50'}`}
                                     >
                                         + Pago Interés
                                     </button>

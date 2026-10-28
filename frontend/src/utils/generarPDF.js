@@ -2,7 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import supabase from '../supabaseClient';
 
-// Función auxiliar para agregar Paginación a cualquier PDF generado
+// Función auxiliar para agregar Paginación
 const agregarPaginacion = (doc) => {
     const pageCount = doc.internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
@@ -66,7 +66,6 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
     });
 
     let finalY = doc.lastAutoTable?.finalY || 35;
-
     if (finalY + 30 > doc.internal.pageSize.getHeight()) {
         doc.addPage();
         finalY = 20;
@@ -144,8 +143,16 @@ export const generarReporteCarteraPDF = async (prestamos, fechaDesde, fechaHasta
             fechaFinEstimada = fecha.toISOString().split('T')[0];
         }
 
-        // Solo sumamos capital e interés proyectado si el préstamo se encuentra ACTIVO
-        if (p.estado === 'activo') {
+        // LA MAGIA DEL RETROVISOR TEMPORAL
+        let estadoRealParaElCorte = p.estado;
+        if ((p.estado === 'completado' || p.estado === 'renovado') && !esModoTodosLosActivos) {
+            // Si tiene fecha_cierre y cerró DESPUÉS del rango del filtro, para este PDF seguía ACTIVO
+            if (p.fecha_cierre && p.fecha_cierre > fechaHasta) {
+                estadoRealParaElCorte = 'activo';
+            }
+        }
+
+        if (estadoRealParaElCorte === 'activo') {
             totalCapital += Number(p.monto_capital);
             totalInteresEsperado += Number(p.interes_total || p.valor_cuota || 0);
         }
@@ -153,15 +160,15 @@ export const generarReporteCarteraPDF = async (prestamos, fechaDesde, fechaHasta
         let estadoTexto = 'Activo';
         let interesFilaDisplay = esPeriodico ? `$${Number(p.valor_cuota || p.interes_total || 0).toFixed(2)} /mes` : `$${Number(p.interes_total || 0).toFixed(2)}`;
 
-        if (p.estado === 'completado') {
+        if (estadoRealParaElCorte === 'completado') {
             estadoTexto = 'Liquidado';
             if (!esPeriodico) totalInteresCobrado += Number(p.interes_total || 0);
-        } else if (p.estado === 'renovado') {
+        } else if (estadoRealParaElCorte === 'renovado') {
             estadoTexto = 'Renovado';
             if (!esPeriodico) totalInteresCobrado += Number(p.interes_total || 0);
         }
 
-        if (!esModoTodosLosActivos && p.estado === 'activo' && !esPeriodico) {
+        if (!esModoTodosLosActivos && estadoRealParaElCorte === 'activo' && !esPeriodico) {
             interesFilaDisplay = '$0.00 (Pendiente)';
         }
 
@@ -201,7 +208,6 @@ export const generarReporteCarteraPDF = async (prestamos, fechaDesde, fechaHasta
     });
 
     let finalY = doc.lastAutoTable?.finalY || 40;
-
     if (finalY + 40 > doc.internal.pageSize.getHeight()) {
         doc.addPage();
         finalY = 20;
