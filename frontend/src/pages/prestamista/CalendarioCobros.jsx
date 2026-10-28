@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { generarReporteRutaPDF } from '../../utils/generarPDF';
 import CartulinaModal from '../../components/CartulinaModal';
-import LibretaMensualModal from '../../components/LibretaMensualModal'; // <-- IMPORTAMOS LA NUEVA LIBRETA
+import LibretaMensualModal from '../../components/LibretaMensualModal';
 
 export default function CalendarioCobros() {
     const { user } = useAuth();
@@ -16,12 +16,12 @@ export default function CalendarioCobros() {
 
     const hoyStr = getFechaLocal();
     const [fecha, setFecha] = useState(hoyStr);
-    const [modalidadActiva, setModalidadActiva] = useState('diario');
     const [cobradorActivo, setCobradorActivo] = useState('todos');
 
+    // Cambiamos el nombre del caché a _v3 para evitar el error de la estructura vieja
     const [pagos, setPagos] = useState(() => {
         try {
-            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta'));
+            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v3'));
             if (cache && cache.fecha === hoyStr) return cache.datos;
             return [];
         } catch { return []; }
@@ -40,60 +40,103 @@ export default function CalendarioCobros() {
         const { data } = await supabase
             .from('historial_pagos')
             .select(`
-            id, fecha_cobro, estado_cobro, monto_recibido, notas,
-            prestamos!inner (
-                id, valor_cuota, prestamista_id, estado, monto_total, frecuencia, fecha_inicio, cobrador, tipo_prestamo, 
-                clientes ( id, nombre, telefono )
-            )
-        `) // <--- AGREGAMOS tipo_prestamo AQUÍ
+                id, fecha_cobro, estado_cobro, monto_recibido, notas, fecha_pago_real,
+                prestamos!inner (
+                    id, valor_cuota, prestamista_id, estado, monto_total, monto_capital, frecuencia, fecha_inicio, cobrador, tipo_prestamo, 
+                    clientes ( id, nombre, telefono )
+                )
+            `)
             .eq('prestamos.prestamista_id', user.id)
             .eq('prestamos.estado', 'activo')
-            .eq('fecha_cobro', fecha)
-            .order('id', { ascending: true });
+            .eq('prestamos.frecuencia', 'diario')
+            .or(`fecha_cobro.eq.${fecha},fecha_pago_real.eq.${fecha}`);
 
         if (data) {
-            setPagos(data);
-            sessionStorage.setItem('anubis_ruta', JSON.stringify({ fecha: fecha, datos: data }));
+            const mapa = {};
+
+            data.forEach(cuota => {
+                const pId = cuota.prestamos.id;
+
+                if (!mapa[pId]) {
+                    mapa[pId] = {
+                        prestamo: cuota.prestamos,
+                        montoIngresadoFisicamenteHoy: 0,
+                        cuotasPagadasHoy: 0,
+                        tieneCuotaProgramadaHoy: false,
+                        estadoDisplay: 'pendiente'
+                    };
+                }
+
+                // Si la cuota tocaba pagar hoy
+                if (cuota.fecha_cobro === fecha) {
+                    mapa[pId].tieneCuotaProgramadaHoy = true;
+                    mapa[pId].estadoDisplay = cuota.estado_cobro;
+                }
+
+                // Si la cuota se pagó físicamente hoy (sin importar de qué día era)
+                if (cuota.fecha_pago_real === fecha && cuota.estado_cobro === 'pagado') {
+                    mapa[pId].montoIngresadoFisicamenteHoy += Number(cuota.monto_recibido || cuota.prestamos.valor_cuota);
+                    mapa[pId].cuotasPagadasHoy += 1;
+                }
+            });
+
+            // Si entró dinero físico hoy, lo mostramos como pagado de una
+            Object.values(mapa).forEach(item => {
+                if (item.montoIngresadoFisicamenteHoy > 0) {
+                    item.estadoDisplay = 'pagado';
+                }
+            });
+
+            const datosAgrupados = Object.values(mapa);
+            setPagos(datosAgrupados);
+            sessionStorage.setItem('anubis_ruta_diaria_v3', JSON.stringify({ fecha: fecha, datos: datosAgrupados }));
         }
         setCargando(false);
     };
 
     const pagosFiltrados = useMemo(() => {
-        const filtrados = pagos.filter(p => {
-            const coincideModalidad = p.prestamos.frecuencia === modalidadActiva;
-            const cobradorReal = p.prestamos.cobrador || 'principal';
-            const coincideCobrador = cobradorActivo === 'todos' || cobradorReal === cobradorActivo;
-            return coincideModalidad && coincideCobrador;
+        const filtrados = pagos.filter(item => {
+            // Se añade el seguro opcional (?.) para evitar errores si el caché fallara
+            const cobradorReal = item?.prestamo?.cobrador || 'principal';
+            return cobradorActivo === 'todos' || cobradorReal === cobradorActivo;
         });
 
         return filtrados.sort((a, b) => {
-            if (a.estado_cobro === 'pagado' && b.estado_cobro !== 'pagado') return 1;
-            if (a.estado_cobro !== 'pagado' && b.estado_cobro === 'pagado') return -1;
-            return 0;
+            if (a.estadoDisplay === 'pagado' && b.estadoDisplay !== 'pagado') return 1;
+            if (a.estadoDisplay !== 'pagado' && b.estadoDisplay === 'pagado') return -1;
+            return a.prestamo.clientes.nombre.localeCompare(b.prestamo.clientes.nombre);
         });
-    }, [pagos, modalidadActiva, cobradorActivo]);
+    }, [pagos, cobradorActivo]);
 
-    const totalEsperado = pagosFiltrados.reduce((sum, p) => sum + Number(p.prestamos.valor_cuota), 0);
-    const totalCobrado = pagosFiltrados.reduce((sum, p) => sum + Number(p.monto_recibido), 0);
+    const totalEsperado = pagosFiltrados.reduce((sum, item) => sum + (item.tieneCuotaProgramadaHoy ? Number(item.prestamo.valor_cuota) : 0), 0);
+    // El total cobrado de la ruta SOLO suma el dinero que entró físicamente ese día
+    const totalCobrado = pagosFiltrados.reduce((sum, item) => sum + item.montoIngresadoFisicamenteHoy, 0);
 
     const descargarPDF = () => {
         const tituloSecundario = cobradorActivo === 'todos' ? 'Global' : cobradorActivo === 'ayudante' ? 'Ayudante' : 'Mis Cobros';
-        generarReporteRutaPDF(pagosFiltrados, `${fecha} (${modalidadActiva.toUpperCase()} - ${tituloSecundario})`, totalEsperado, totalCobrado);
+
+        const datosParaPDF = pagosFiltrados.map(item => ({
+            prestamos: item.prestamo,
+            estado_cobro: item.estadoDisplay,
+            monto_recibido: item.montoIngresadoFisicamenteHoy || item.prestamo.valor_cuota
+        }));
+        generarReporteRutaPDF(datosParaPDF, `${fecha} (DIARIO - ${tituloSecundario})`, totalEsperado, totalCobrado);
     };
 
-    const abrirCartulina = (pagoDelDia) => {
+    const abrirCartulina = (itemAgrupado) => {
+        const pInfo = itemAgrupado.prestamo;
         const prestamoFormateado = {
-            id: pagoDelDia.prestamos.id,
-            monto_total: pagoDelDia.prestamos.monto_total,
-            monto_capital: pagoDelDia.prestamos.monto_total, // Útil para la libreta mensual
-            frecuencia: pagoDelDia.prestamos.frecuencia,
-            fecha_inicio: pagoDelDia.prestamos.fecha_inicio,
-            estado: pagoDelDia.prestamos.estado,
-            valor_cuota: pagoDelDia.prestamos.valor_cuota,
-            cliente_id: pagoDelDia.prestamos.clientes.id,
-            clientes: pagoDelDia.prestamos.clientes,
-            cobrador: pagoDelDia.prestamos.cobrador,
-            tipo_prestamo: pagoDelDia.prestamos.tipo_prestamo // <--- LÍNEA VITAL QUE FALTABA
+            id: pInfo.id,
+            monto_total: pInfo.monto_total,
+            monto_capital: pInfo.monto_capital || pInfo.monto_total,
+            frecuencia: pInfo.frecuencia,
+            fecha_inicio: pInfo.fecha_inicio,
+            estado: pInfo.estado,
+            valor_cuota: pInfo.valor_cuota,
+            cliente_id: pInfo.clientes.id,
+            clientes: pInfo.clientes,
+            cobrador: pInfo.cobrador,
+            tipo_prestamo: pInfo.tipo_prestamo
         };
         setPrestamoSeleccionado(prestamoFormateado);
     };
@@ -104,8 +147,12 @@ export default function CalendarioCobros() {
 
     const finalizarPrestamo = async () => {
         await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0 }).eq('id', prestamoSeleccionado.id);
-        await supabase.from('historial_pagos').update({ estado_cobro: 'pagado', monto_recibido: prestamoSeleccionado.valor_cuota, fecha_cobro: hoyStr })
-            .eq('prestamo_id', prestamoSeleccionado.id).in('estado_cobro', ['pendiente', 'no_pago']);
+
+        await supabase.from('historial_pagos').update({
+            estado_cobro: 'pagado',
+            monto_recibido: prestamoSeleccionado.valor_cuota,
+            fecha_pago_real: fecha
+        }).eq('prestamo_id', prestamoSeleccionado.id).in('estado_cobro', ['pendiente', 'no_pago']);
 
         setPrestamoSeleccionado(null);
         fetchPagos();
@@ -120,27 +167,7 @@ export default function CalendarioCobros() {
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
                         Volver
                     </Link>
-                    <h1 className="text-xl font-black text-neutral-900 tracking-widest uppercase">Anubis Ruta</h1>
-                </div>
-
-                <div className="grid grid-cols-4 gap-1 bg-gray-200 p-1 rounded-xl">
-                    {[
-                        { id: 'diario', label: 'Diario' },
-                        { id: 'semanal', label: 'Semanal' },
-                        { id: 'quincenal', label: 'Quincenal' },
-                        { id: 'mensual', label: 'Mensual' }
-                    ].map(tab => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setModalidadActiva(tab.id)}
-                            className={`py-2 text-[10px] sm:text-xs font-black uppercase tracking-wider rounded-lg transition-all ${modalidadActiva === tab.id
-                                ? 'bg-neutral-900 text-amber-500 shadow-sm'
-                                : 'text-gray-600 hover:text-neutral-900'
-                                }`}
-                        >
-                            {tab.label}
-                        </button>
-                    ))}
+                    <h1 className="text-xl font-black text-neutral-900 tracking-widest uppercase">Ruta Diaria</h1>
                 </div>
 
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
@@ -167,7 +194,6 @@ export default function CalendarioCobros() {
                             <button
                                 onClick={descargarPDF}
                                 className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2"
-                                title="Descargar Reporte PDF"
                             >
                                 <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                                 PDF
@@ -177,7 +203,7 @@ export default function CalendarioCobros() {
 
                     <div className="flex justify-between text-sm border-t border-gray-100 pt-4">
                         <div>
-                            <p className="text-gray-400 font-bold uppercase text-[10px] tracking-widest">Esperado ({modalidadActiva})</p>
+                            <p className="text-gray-400 font-bold uppercase text-[10px] tracking-widest">Esperado Hoy</p>
                             <p className="font-black text-xl text-neutral-800">${totalEsperado.toFixed(2)}</p>
                         </div>
                         <div className="text-right">
@@ -192,35 +218,56 @@ export default function CalendarioCobros() {
                         <div className="flex justify-center py-8"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div></div>
                     ) : pagosFiltrados.length === 0 ? (
                         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
-                            <p className="text-gray-400 font-medium">No hay cobros para este filtro.</p>
+                            <p className="text-gray-400 font-medium">No hay cobros diarios para esta fecha.</p>
                         </div>
                     ) : (
-                        pagosFiltrados.map((p) => (
-                            <div key={p.id} className={`bg-white p-4 rounded-2xl shadow-sm border-l-4 transition-all hover:shadow-md ${p.estado_cobro === 'pagado' ? 'border-l-green-500 opacity-75' :
-                                p.estado_cobro === 'no_pago' ? 'border-l-red-500' : 'border-l-amber-400'
+                        pagosFiltrados.map((item) => (
+                            <div key={item.prestamo.id} className={`bg-white p-4 rounded-2xl shadow-sm border-l-4 transition-all hover:shadow-md ${item.estadoDisplay === 'pagado' ? 'border-l-green-500 opacity-75' :
+                                item.estadoDisplay === 'no_pago' ? 'border-l-red-500' : 'border-l-amber-400'
                                 }`}>
                                 <div className="flex justify-between items-center">
                                     <div>
-                                        <h2 className="font-bold text-gray-800 text-lg">{p.prestamos.clientes.nombre}</h2>
+                                        <h2 className="font-bold text-gray-800 text-lg">{item.prestamo.clientes.nombre}</h2>
                                         <p className="text-xs font-bold text-gray-400 mb-2 flex items-center gap-1">
                                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
-                                            {p.prestamos.clientes.telefono || 'Sin número'}
+                                            {item.prestamo.clientes.telefono || 'Sin número'}
                                         </p>
                                         <div className="flex items-center gap-2">
-                                            <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md ${p.estado_cobro === 'pagado' ? 'bg-green-50 text-green-600 border border-green-200' : p.estado_cobro === 'no_pago' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-amber-50 text-amber-600 border border-amber-200'}`}>
-                                                {p.estado_cobro === 'pagado' ? '✓ Cobrado' : p.estado_cobro === 'no_pago' ? '✗ Atrasado' : 'Pendiente'}
+                                            <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md ${item.estadoDisplay === 'pagado' ? 'bg-green-50 text-green-600 border border-green-200' : item.estadoDisplay === 'no_pago' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-amber-50 text-amber-600 border border-amber-200'}`}>
+                                                {item.estadoDisplay === 'pagado' ? '✓ Cobrado' : item.estadoDisplay === 'no_pago' ? '✗ Atrasado' : 'Pendiente'}
                                             </span>
-                                            {p.prestamos.cobrador === 'ayudante' && (
+                                            {item.prestamo.cobrador === 'ayudante' && (
                                                 <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">
                                                     Ayudante
                                                 </span>
                                             )}
                                         </div>
                                     </div>
+
                                     <div className="text-right flex flex-col items-end">
-                                        <p className="font-black text-gray-800 text-2xl">${p.prestamos.valor_cuota}</p>
+                                        {item.estadoDisplay === 'pagado' ? (
+                                            <>
+                                                {/* 
+                                                    Si miramos el martes, muestra los $6.00 (montoIngresadoFisicamenteHoy).
+                                                    Si miramos el lunes (ya se pagó, pero entró en otra fecha), muestra $3.00 (valor de su cuota base). 
+                                                */}
+                                                <p className="font-black text-green-600 text-2xl">
+                                                    ${item.montoIngresadoFisicamenteHoy > 0 ? item.montoIngresadoFisicamenteHoy.toFixed(2) : Number(item.prestamo.valor_cuota).toFixed(2)}
+                                                </p>
+
+                                                {/* La etiqueta de "2 cuotas" solo se muestra en el día en que entraron múltiples pagos */}
+                                                {item.cuotasPagadasHoy > 1 && (
+                                                    <p className="text-[9px] font-black text-green-700 bg-green-100 px-2 py-0.5 rounded-full mt-1 uppercase tracking-wider">
+                                                        {item.cuotasPagadasHoy} cuotas
+                                                    </p>
+                                                )}
+                                            </>
+                                        ) : (
+                                            <p className="font-black text-gray-800 text-2xl">${item.prestamo.valor_cuota}</p>
+                                        )}
+
                                         <button
-                                            onClick={() => abrirCartulina(p)}
+                                            onClick={() => abrirCartulina(item)}
                                             className="mt-2 bg-amber-50 text-amber-700 hover:bg-amber-100 font-black tracking-widest uppercase text-[9px] px-4 py-2 rounded-lg transition-colors border border-amber-200 shadow-sm"
                                         >
                                             Cartulina
@@ -248,6 +295,7 @@ export default function CalendarioCobros() {
                         onRenovar={renovarPrestamo}
                         onFinalizar={finalizarPrestamo}
                         onUpdate={fetchPagos}
+                        fechaRuta={fecha}
                     />
                 )
             )}

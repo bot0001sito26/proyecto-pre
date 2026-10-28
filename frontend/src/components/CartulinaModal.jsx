@@ -3,7 +3,7 @@ import supabase from '../supabaseClient';
 import ConfirmModal from './ConfirmModal';
 import { generarCartulinaPDF } from '../utils/generarPDF';
 
-export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinalizar, onUpdate }) {
+export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinalizar, onUpdate, fechaRuta }) {
     const [cuotas, setCuotas] = useState([]);
     const [cargando, setCargando] = useState(true);
     const [cuotaParaNota, setCuotaParaNota] = useState(null);
@@ -73,13 +73,22 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     const ejecutarCambioEstado = async (cuota, nuevoEstado) => {
         setModalConf({ isOpen: false, accion: null }); // Cierra el modal
 
+        // Si no nos pasan fechaRuta, usamos hoy
+        const fechaOperacion = fechaRuta || hoyStr;
+
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
+        // La magia ocurre aquí: guardamos EL DÍA REAL EN QUE SE HIZO EL COBRO
+        const fechaPagoReal = nuevoEstado === 'pagado' ? fechaOperacion : null;
 
         // Actualización optimista (cambia el color instantáneamente en pantalla)
-        setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto } : c));
+        setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto, fecha_pago_real: fechaPagoReal } : c));
 
         // Guardado en la base de datos en segundo plano
-        const { error } = await supabase.from('historial_pagos').update({ estado_cobro: nuevoEstado, monto_recibido: monto }).eq('id', cuota.id);
+        const { error } = await supabase.from('historial_pagos').update({
+            estado_cobro: nuevoEstado,
+            monto_recibido: monto,
+            fecha_pago_real: fechaPagoReal // <-- Lo inyectamos a Supabase
+        }).eq('id', cuota.id);
 
         if (!error && onUpdate) {
             onUpdate();

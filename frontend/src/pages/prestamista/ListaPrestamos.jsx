@@ -3,7 +3,7 @@ import supabase from '../../supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import CartulinaModal from '../../components/CartulinaModal';
-import LibretaMensualModal from '../../components/LibretaMensualModal'; // CORRECCIÓN 1: Importado
+import LibretaMensualModal from '../../components/LibretaMensualModal';
 import ClienteAcordeon from '../../components/ClienteAcordeon';
 import { generarReporteCarteraPDF } from '../../utils/generarPDF';
 
@@ -23,13 +23,15 @@ export default function ListaPrestamos() {
     const [busqueda, setBusqueda] = useState('');
     const [pagina, setPagina] = useState(1);
 
+    // NUEVO ESTADO: Privacidad (Ojito)
+    const [mostrarValores, setMostrarValores] = useState(false);
+
     const [prestamos, setPrestamos] = useState(() => {
         try { return JSON.parse(sessionStorage.getItem('anubis_prestamos')) || []; } catch { return []; }
     });
     const [pagosRango, setPagosRango] = useState(() => {
         try { return JSON.parse(sessionStorage.getItem('anubis_pagos_rango')) || []; } catch { return []; }
     });
-    // NUEVO ESTADO: Para guardar los intereses cobrados de los préstamos mensuales
     const [movimientosRango, setMovimientosRango] = useState(() => {
         try { return JSON.parse(sessionStorage.getItem('anubis_movimientos_rango')) || []; } catch { return []; }
     });
@@ -37,7 +39,6 @@ export default function ListaPrestamos() {
     const [cargando, setCargando] = useState(true);
     const [prestamoSeleccionado, setPrestamoSeleccionado] = useState(null);
 
-    // SOLUCIÓN 1: Limpiar el estado usando navigate de React Router
     useEffect(() => {
         if (!cargando && location.state?.abrirPrestamoId && prestamos.length > 0) {
             const prestamoParaAbrir = prestamos.find(p => p.id === location.state.abrirPrestamoId);
@@ -59,7 +60,6 @@ export default function ListaPrestamos() {
     const fetchDatosDashboard = async () => {
         setCargando(true);
 
-        // CORRECCIÓN 3: Agregado tipo_prestamo y cobrador al select
         const { data: dataPrestamos } = await supabase
             .from('prestamos')
             .select(`
@@ -78,7 +78,6 @@ export default function ListaPrestamos() {
             .gte('fecha_cobro', fechaDesde)
             .lte('fecha_cobro', fechaHasta);
 
-        // CORRECCIÓN 5: Traer ganancias de los préstamos mensuales (pago_interes)
         const { data: dataMovimientos } = await supabase
             .from('movimientos_mensuales')
             .select(`monto, prestamos!inner ( prestamista_id )`)
@@ -106,12 +105,10 @@ export default function ListaPrestamos() {
         return prestamos.filter(p => p.fecha_inicio >= fechaDesde && p.fecha_inicio <= fechaHasta);
     }, [prestamos, fechaDesde, fechaHasta]);
 
-    // CORRECCIÓN 4: Agregado [prestamos] como dependencia
     const todosLosActivos = useMemo(() => {
         return prestamos.filter(p => p.estado === 'activo');
     }, [prestamos]);
 
-    // El capital prestado ahora siempre suma TODOS los activos
     const capitalActivoTotal = useMemo(() => {
         return todosLosActivos.reduce((sum, p) => sum + Number(p.monto_capital), 0);
     }, [todosLosActivos]);
@@ -120,7 +117,6 @@ export default function ListaPrestamos() {
         const prestamosContabilizados = new Set();
         let ganancia = 0;
 
-        // 1. Ganancia de cuotas fijas (completadas/renovadas)
         pagosRango.forEach(pago => {
             const prestamo = pago.prestamos;
             if (prestamo.estado === 'completado' || prestamo.estado === 'renovado') {
@@ -131,7 +127,6 @@ export default function ListaPrestamos() {
             }
         });
 
-        // 2. Ganancia de préstamos mensuales (Pagos de Interés sueltos)
         movimientosRango.forEach(mov => {
             ganancia += Number(mov.monto);
         });
@@ -159,12 +154,10 @@ export default function ListaPrestamos() {
     const finalizarPrestamo = async () => {
         await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0 }).eq('id', prestamoSeleccionado.id);
 
-        // Finalizamos los pagos pendientes si es de cuota fija
         if (prestamoSeleccionado.tipo_prestamo === 'cuota_fija') {
             await supabase.from('historial_pagos').update({ estado_cobro: 'pagado', monto_recibido: prestamoSeleccionado.valor_cuota, fecha_cobro: hoyStr })
                 .eq('prestamo_id', prestamoSeleccionado.id).in('estado_cobro', ['pendiente', 'no_pago']);
         }
-
         setPrestamoSeleccionado(null);
         fetchDatosDashboard();
     };
@@ -182,10 +175,26 @@ export default function ListaPrestamos() {
 
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-full h-1 bg-amber-500"></div>
-                    <h2 className="font-black text-neutral-800 mb-4 text-xs uppercase tracking-widest flex items-center gap-2">
-                        <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
-                        Filtro de Rendimiento
-                    </h2>
+
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="font-black text-neutral-800 text-xs uppercase tracking-widest flex items-center gap-2">
+                            <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
+                            Filtro de Rendimiento
+                        </h2>
+
+                        {/* BOTÓN DEL OJITO */}
+                        <button
+                            onClick={() => setMostrarValores(!mostrarValores)}
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-xl transition"
+                            title={mostrarValores ? "Ocultar Valores" : "Mostrar Valores"}
+                        >
+                            {mostrarValores ? (
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.29 3.29m0 0a10.05 10.05 0 015.71-1.29c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0l-3.29-3.29" /></svg>
+                            ) : (
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                            )}
+                        </button>
+                    </div>
 
                     <div className="flex flex-col md:flex-row items-end gap-3 mb-6">
                         <div className="w-full">
@@ -203,18 +212,22 @@ export default function ListaPrestamos() {
                         </button>
                         <button onClick={() => generarReporteCarteraPDF(todosLosActivos, 'INICIO', 'ACTUALIDAD')} className="w-full md:w-auto bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 px-5 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2 whitespace-nowrap h-[46px] text-xs">
                             <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                            Todos los Activos
+                            Todos Activos
                         </button>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 text-center">
-                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 transition-all">
                             <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-1">Capital Total Activo</p>
-                            <p className="text-xl font-black text-neutral-800">${capitalActivoTotal.toFixed(2)}</p>
+                            <p className={`text-xl font-black ${mostrarValores ? 'text-neutral-800' : 'text-gray-400'}`}>
+                                {mostrarValores ? `$${capitalActivoTotal.toFixed(2)}` : '$ ***.**'}
+                            </p>
                         </div>
-                        <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 shadow-sm">
+                        <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 shadow-sm transition-all">
                             <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1">Ganancia en Fechas</p>
-                            <p className="text-xl font-black text-amber-600">${interesGanadoRango.toFixed(2)}</p>
+                            <p className={`text-xl font-black ${mostrarValores ? 'text-amber-600' : 'text-amber-300'}`}>
+                                {mostrarValores ? `$${interesGanadoRango.toFixed(2)}` : '$ ***.**'}
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -257,7 +270,7 @@ export default function ListaPrestamos() {
                         prestamo={prestamoSeleccionado}
                         onClose={() => setPrestamoSeleccionado(null)}
                         onFinalizar={finalizarPrestamo}
-                        onUpdate={fetchDatosDashboard} // CORRECCIÓN 2: Estaba fetchDatos
+                        onUpdate={fetchDatosDashboard}
                     />
                 ) : (
                     <CartulinaModal
@@ -265,7 +278,7 @@ export default function ListaPrestamos() {
                         onClose={() => setPrestamoSeleccionado(null)}
                         onRenovar={renovarPrestamo}
                         onFinalizar={finalizarPrestamo}
-                        onUpdate={fetchDatosDashboard} // CORRECCIÓN 2: Estaba fetchDatos
+                        onUpdate={fetchDatosDashboard}
                     />
                 )
             )}

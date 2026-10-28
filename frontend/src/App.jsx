@@ -8,6 +8,7 @@ import DashboardAdmin from './pages/admin/DashboardAdmin';
 import Suspendido from './pages/Suspendido';
 import CalendarioCobros from './pages/prestamista/CalendarioCobros';
 import ListaPrestamos from './pages/prestamista/ListaPrestamos';
+import CobrosPeriodicos from './pages/prestamista/CobrosPeriodicos';
 
 // Guardián para usuarios logueados
 const ProtectedRoute = ({ children }) => {
@@ -61,6 +62,8 @@ export default function App() {
               </AdminRoute>
             </ProtectedRoute>
           } />
+
+          <Route path="/cobros-periodicos" element={<CobrosPeriodicos />} />
 
           <Route path="/calendario" element={
             <ProtectedRoute>

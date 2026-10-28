@@ -47,7 +47,7 @@ export default function DashboardPrestamista() {
                 if (!mapaClientes[cliente.id]) {
                     mapaClientes[cliente.id] = {
                         id: cliente.id,
-                        prestamo_id: pago.prestamos.id, // <-- ID del préstamo para abrir la cartulina
+                        prestamo_id: pago.prestamos.id,
                         nombre: cliente.nombre,
                         fecha_mas_antigua: pago.fecha_cobro,
                         deuda_total: Number(pago.prestamos.valor_cuota),
@@ -146,7 +146,6 @@ export default function DashboardPrestamista() {
                                                 <p className="font-black text-red-600 text-base leading-none">${m.deuda_total.toFixed(2)}</p>
                                                 <span className="text-[9px] text-gray-400 font-bold uppercase">{m.cuotas_caidas} cuotas</span>
                                             </div>
-                                            {/* ENVIAMOS EL ID DEL PRÉSTAMO POR EL STATE */}
                                             <Link to="/prestamos" state={{ abrirPrestamoId: m.prestamo_id }} className="bg-red-50 text-red-600 p-2 rounded-lg hover:bg-red-100 transition">
                                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
@@ -160,21 +159,47 @@ export default function DashboardPrestamista() {
                     </div>
                 </div>
 
-                <div className="bg-white rounded-2xl shadow-sm overflow-hidden border border-gray-100 p-6 text-center relative">
-                    <div className="w-12 h-12 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                        <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                        </svg>
+                {/* NUEVA SECCIÓN DIVIDIDA EN 2 COLUMNAS */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Tarjeta 1: Ruta Diaria */}
+                    <div className="bg-white rounded-2xl shadow-sm overflow-hidden border border-gray-100 p-5 text-center flex flex-col justify-between h-full">
+                        <div>
+                            <div className="w-10 h-10 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto mb-2">
+                                <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                            </div>
+                            <h2 className="font-black text-neutral-900 text-base tracking-wider uppercase mb-1">Ruta Diaria</h2>
+                            <p className="text-[11px] text-gray-500 mb-4 font-medium px-2">Abre tu cartulina digital y registra los pagos diarios en la calle.</p>
+                        </div>
+                        <Link
+                            to="/calendario"
+                            className="inline-block w-full bg-amber-500 text-neutral-950 font-black uppercase tracking-widest px-4 py-3 rounded-xl hover:bg-amber-600 hover:text-white transition shadow-sm text-xs"
+                        >
+                            Iniciar Ruta
+                        </Link>
                     </div>
-                    <h2 className="font-black text-neutral-900 text-lg tracking-wider uppercase mb-1">Ruta Diaria</h2>
-                    <p className="text-xs text-gray-500 mb-5 font-medium">Abre tu cartulina digital y registra los pagos en la calle.</p>
-                    <Link
-                        to="/calendario"
-                        className="inline-block w-full bg-amber-500 text-neutral-950 font-black uppercase tracking-widest px-6 py-4 rounded-xl hover:bg-amber-600 hover:text-white transition shadow-lg shadow-amber-500/20"
-                    >
-                        Iniciar Ruta de Hoy
-                    </Link>
+
+                    {/* Tarjeta 2: Cobros Periódicos */}
+                    <div className="bg-white rounded-2xl shadow-sm overflow-hidden border border-gray-100 p-5 text-center flex flex-col justify-between h-full">
+                        <div>
+                            <div className="w-10 h-10 bg-neutral-100 rounded-full flex items-center justify-center mx-auto mb-2">
+                                <svg className="w-5 h-5 text-neutral-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                </svg>
+                            </div>
+                            <h2 className="font-black text-neutral-900 text-base tracking-wider uppercase mb-1">Periódicos</h2>
+                            <p className="text-[11px] text-gray-500 mb-4 font-medium px-2">Listado inteligente de cobros Semanales, Quincenales y Mensuales.</p>
+                        </div>
+                        <Link
+                            to="/cobros-periodicos"
+                            className="inline-block w-full bg-neutral-900 text-white font-black uppercase tracking-widest px-4 py-3 rounded-xl hover:bg-neutral-800 transition shadow-sm text-xs border border-neutral-900"
+                        >
+                            Ver Pendientes
+                        </Link>
+                    </div>
                 </div>
+
             </div>
         </div>
     );
