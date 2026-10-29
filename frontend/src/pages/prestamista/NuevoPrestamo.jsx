@@ -14,12 +14,11 @@ export default function NuevoPrestamo() {
     const [clientes, setClientes] = useState([]);
     const [clienteId, setClienteId] = useState(clientePreseleccionado);
 
-    // NUEVO ESTADO: Selección del modelo de negocio
-    const [tipoPrestamo, setTipoPrestamo] = useState('cuota_fija'); // 'cuota_fija' o 'mensual_interes'
+    const [tipoPrestamo, setTipoPrestamo] = useState('cuota_fija');
 
     const [montoCapital, setMontoCapital] = useState('');
-    const [interes, setInteres] = useState(''); // Solo se usa en cuota fija
-    const [frecuencia, setFrecuencia] = useState('diario'); // Solo se usa en cuota fija
+    const [interes, setInteres] = useState('');
+    const [frecuencia, setFrecuencia] = useState('diario');
     const [cobrador, setCobrador] = useState('principal');
 
     const hoyEstandar = new Date().toISOString().split('T')[0];
@@ -33,11 +32,10 @@ export default function NuevoPrestamo() {
         }
     }, [user]);
 
-    // Limpia campos al cambiar el tipo de préstamo
     useEffect(() => {
         if (tipoPrestamo === 'mensual_interes') {
             setFrecuencia('mensual');
-            setInteres('0'); // El interés es variable, no se fija un total al inicio.
+            setInteres('0');
         } else {
             setFrecuencia('diario');
             setInteres('');
@@ -72,7 +70,6 @@ export default function NuevoPrestamo() {
             if (frecuencia === 'mensual') numeroCuotas = 1;
             valorCuota = (montoTotal / numeroCuotas).toFixed(2);
         } else {
-            // El interés invisible inicial para el primer mes
             valorCuota = (capital * 0.20).toFixed(2);
         }
 
@@ -89,16 +86,18 @@ export default function NuevoPrestamo() {
                 valor_cuota: valorCuota,
                 fecha_inicio: fechaInicio,
                 cobrador,
-                tipo_prestamo: tipoPrestamo // Guardamos si es de cuota fija o interés flexible
+                tipo_prestamo: tipoPrestamo
             }]).select().single();
 
         if (!errorPrestamo && prestamo) {
 
             const pagosGenerados = [];
-            let fechaCobro = new Date(fechaInicio + 'T12:00:00');
-            fechaCobro.setHours(0, 0, 0, 0);
+
+            // Trabajamos las fechas asumiendo la zona horaria local al dividir la cadena
+            const [anio, mes, dia] = fechaInicio.split('-').map(Number);
 
             if (tipoPrestamo === 'cuota_fija') {
+                let fechaCobro = new Date(anio, mes - 1, dia, 12, 0, 0);
                 for (let i = 1; i <= numeroCuotas; i++) {
                     if (frecuencia === 'diario') fechaCobro.setDate(fechaCobro.getDate() + 1);
                     else if (frecuencia === 'semanal') fechaCobro.setDate(fechaCobro.getDate() + 7);
@@ -113,11 +112,11 @@ export default function NuevoPrestamo() {
                     });
                 }
             } else {
-                // MODELO MENSUAL INTERÉS FLEXIBLE
-                fechaCobro.setDate(fechaCobro.getDate() + 30);
-                const fechaCobroStr = fechaCobro.toISOString().split('T')[0];
+                // MODELO MENSUAL INTERÉS: AVANZAMOS EXACTAMENTE UN MES CALENDARIO
+                let fechaCobroCorte = new Date(anio, mes - 1, dia, 12, 0, 0);
+                fechaCobroCorte.setMonth(fechaCobroCorte.getMonth() + 1);
+                const fechaCobroStr = fechaCobroCorte.toISOString().split('T')[0];
 
-                // Añadimos 1 solo registro para que aparezca en el Calendario (Ruta) exactamente ese día
                 pagosGenerados.push({
                     prestamo_id: prestamo.id,
                     fecha_cobro: fechaCobroStr,
@@ -125,7 +124,6 @@ export default function NuevoPrestamo() {
                     monto_recibido: 0
                 });
 
-                // Registramos la bitácora de inicio
                 await supabase.from('movimientos_mensuales').insert([{
                     prestamo_id: prestamo.id,
                     fecha: fechaInicio,
@@ -139,7 +137,6 @@ export default function NuevoPrestamo() {
                 await supabase.from('historial_pagos').insert(pagosGenerados);
             }
 
-            // Lógica de Renovación
             if (prestamoARenovar) {
                 await supabase.from('prestamos').update({ saldo_pendiente: 0, estado: 'renovado', fecha_cierre: fechaInicio }).eq('id', prestamoARenovar);
                 const { data: prestamoViejo } = await supabase.from('prestamos').select('valor_cuota').eq('id', prestamoARenovar).single();
@@ -154,6 +151,15 @@ export default function NuevoPrestamo() {
             alert("Error al crear préstamo");
         }
         setGuardando(false);
+    };
+
+    // Función auxiliar para calcular la fecha del próximo mes visualmente en el resumen
+    const calcularSiguienteMesVisual = (fechaIni) => {
+        if (!fechaIni) return '';
+        const [a, m, d] = fechaIni.split('-').map(Number);
+        const prox = new Date(a, m - 1, d, 12, 0, 0);
+        prox.setMonth(prox.getMonth() + 1);
+        return prox.toISOString().split('T')[0];
     };
 
     return (
@@ -173,7 +179,6 @@ export default function NuevoPrestamo() {
 
                     <form onSubmit={handleCrearPrestamo} className="space-y-5">
 
-                        {/* SELECTOR DE TIPO DE PRÉSTAMO */}
                         <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
                             <label className="block text-[10px] font-black uppercase tracking-widest text-neutral-800 mb-2">Modelo de Préstamo</label>
                             <div className="grid grid-cols-2 gap-2">
@@ -227,7 +232,6 @@ export default function NuevoPrestamo() {
                                 />
                             </div>
 
-                            {/* EL CAMPO DE INTERÉS SOLO APARECE SI ES CUOTA FIJA */}
                             {tipoPrestamo === 'cuota_fija' && (
                                 <div>
                                     <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Interés Total ($)</label>
@@ -241,7 +245,6 @@ export default function NuevoPrestamo() {
                             )}
                         </div>
 
-                        {/* LAS FRECUENCIAS SOLO APARECEN SI ES CUOTA FIJA */}
                         {tipoPrestamo === 'cuota_fija' && (
                             <div>
                                 <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Modalidad de Cobro</label>
@@ -292,7 +295,7 @@ export default function NuevoPrestamo() {
                                             ${parseFloat(montoCapital).toFixed(2)}
                                         </p>
                                         <p className="text-xs text-amber-700 font-bold mt-2 bg-amber-100 inline-block px-3 py-1 rounded-full">
-                                            Generará interés el {new Date(new Date(fechaInicio).getTime() + (30 * 24 * 60 * 60 * 1000)).toISOString().split('T')[0]}
+                                            Próximo corte: {calcularSiguienteMesVisual(fechaInicio)}
                                         </p>
                                     </>
                                 ) : null}

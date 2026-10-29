@@ -29,7 +29,8 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
     doc.setTextColor(100, 100, 100);
     doc.text(`Reporte de Ruta - Fecha: ${fecha}`, 14, 28);
 
-    const tableColumn = ["#", "Cliente", "Teléfono", "Modalidad", "Monto ($)", "Estado", "Motivo"];
+    // NUEVAS COLUMNAS: Cuota Base, Cantidad (Nº de Cuotas) y Total ($)
+    const tableColumn = ["#", "Cliente", "Teléfono", "Mod.", "Cuota", "Cant.", "Total", "Estado", "Motivo"];
     const tableRows = [];
 
     pagos.forEach((p, index) => {
@@ -38,17 +39,29 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
         else if (p.estado_cobro === 'no_pago') estadoTexto = 'Atrasado';
 
         const esPeriodico = p.prestamos.tipo_prestamo === 'mensual_interes';
-        const modalidadTexto = esPeriodico ? 'Mensual (Interés)' : (p.prestamos.frecuencia ? p.prestamos.frecuencia.charAt(0).toUpperCase() + p.prestamos.frecuencia.slice(1) : 'Diario');
+        const modalidadTexto = esPeriodico ? 'Mensual' : (p.prestamos.frecuencia ? p.prestamos.frecuencia.charAt(0).toUpperCase() + p.prestamos.frecuencia.slice(1, 4) : 'Diar');
 
-        const montoImprimir = Number(p.monto_recibido).toFixed(2);
+        const cuotaBase = Number(p.prestamos.valor_cuota).toFixed(2);
+        const totalPagado = Number(p.monto_recibido).toFixed(2);
+
+        // Cálculo de cantidad de cuotas pagadas
+        let cantidadCuotas = '-';
+        if (estadoTexto === 'Pagado') {
+            // Si pasamos cuotasPagadasHoy desde el componente, lo usamos. 
+            // Si no, lo calculamos dividiendo el monto recibido entre la cuota base.
+            cantidadCuotas = p.cuotasPagadasHoy || Math.max(1, Math.round(Number(p.monto_recibido) / Number(p.prestamos.valor_cuota)));
+        }
+
         const motivoTexto = p.notas || '';
 
         tableRows.push([
             index + 1,
             p.prestamos.clientes.nombre,
-            p.prestamos.clientes.telefono || 'Sin Número',
+            p.prestamos.clientes.telefono || 'S/N',
             modalidadTexto,
-            `$${montoImprimir}`,
+            `$${cuotaBase}`,
+            cantidadCuotas,
+            `$${totalPagado}`,
             estadoTexto,
             motivoTexto
         ]);
@@ -59,10 +72,28 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
         head: [tableColumn],
         body: tableRows,
         theme: 'grid',
-        headStyles: { fillColor: [245, 158, 11], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 9, cellPadding: 3 },
+        headStyles: { fillColor: [245, 158, 11], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+        styles: { fontSize: 8, cellPadding: 2 },
         alternateRowStyles: { fillColor: [250, 250, 250] },
-        columnStyles: { 0: { cellWidth: 12 }, 6: { cellWidth: 'auto' } }
+        // Ajustamos anchos para que quepan las 9 columnas sin romper el diseño
+        columnStyles: {
+            0: { cellWidth: 8 },
+            1: { cellWidth: 35 },
+            2: { cellWidth: 20 },
+            3: { cellWidth: 15 },
+            4: { cellWidth: 15 },
+            5: { cellWidth: 12, halign: 'center' },
+            6: { cellWidth: 18, fontStyle: 'bold' },
+            7: { cellWidth: 18 },
+            8: { cellWidth: 'auto' }
+        },
+        didParseCell: function (data) {
+            // Pintar de verde suave la fila si está pagado para identificar rápido visualmente
+            if (data.section === 'body' && data.row.raw[7] === 'Pagado') {
+                data.cell.styles.fillColor = [240, 253, 244];
+                if (data.column.index === 6) data.cell.styles.textColor = [22, 163, 74]; // Total en verde oscuro
+            }
+        }
     });
 
     let finalY = doc.lastAutoTable?.finalY || 35;
@@ -76,7 +107,7 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
     doc.text(`Total Esperado: $${Number(totalEsperado).toFixed(2)}`, 14, finalY + 15);
     doc.setFontSize(14);
     doc.setTextColor(16, 185, 129);
-    doc.text(`Total Cobrado: $${Number(totalCobrado).toFixed(2)}`, 14, finalY + 25);
+    doc.text(`Dinero Físico Ingresado (Total Cobrado): $${Number(totalCobrado).toFixed(2)}`, 14, finalY + 25);
 
     agregarPaginacion(doc);
     doc.save(`Anubis_Ruta_${fecha}.pdf`);
@@ -146,7 +177,6 @@ export const generarReporteCarteraPDF = async (prestamos, fechaDesde, fechaHasta
         // LA MAGIA DEL RETROVISOR TEMPORAL
         let estadoRealParaElCorte = p.estado;
         if ((p.estado === 'completado' || p.estado === 'renovado') && !esModoTodosLosActivos) {
-            // Si tiene fecha_cierre y cerró DESPUÉS del rango del filtro, para este PDF seguía ACTIVO
             if (p.fecha_cierre && p.fecha_cierre > fechaHasta) {
                 estadoRealParaElCorte = 'activo';
             }

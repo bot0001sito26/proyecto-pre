@@ -12,40 +12,69 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
     const [cobradorLocal, setCobradorLocal] = useState(prestamo?.cobrador || 'principal');
     const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
 
+    const [editandoFecha, setEditandoFecha] = useState(false);
+    const [nuevaFecha, setNuevaFecha] = useState('');
+
     const [calculos, setCalculos] = useState({ meses: 0, generado: 0, pagado: 0, pendiente: 0, proximoCorte: '' });
 
-    const getFechaLocal = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
+    // Calculo robusto de fecha local (YYYY-MM-DD)
+    const getFechaLocal = () => {
+        const d = new Date();
+        const offset = d.getTimezoneOffset() * 60000;
+        return new Date(d.getTime() - offset).toISOString().split('T')[0];
+    };
     const hoyStr = getFechaLocal();
 
     useEffect(() => {
         if (prestamo?.id) {
             setCobradorLocal(prestamo.cobrador || 'principal');
+            setNuevaFecha(prestamo.fecha_inicio || '');
             fetchMovimientos();
         }
     }, [prestamo?.id]);
 
     useEffect(() => {
-        if (cargando || (movimientos.length === 0 && !prestamo)) return;
+        if (cargando || !prestamo?.fecha_inicio) return;
 
         const capitalOriginal = parseFloat(prestamo.monto_total);
-        const fechaInicio = new Date(prestamo.fecha_inicio + 'T12:00:00');
-        const hoyDate = new Date(hoyStr + 'T12:00:00');
+
+        // 1. Extraer día y mes exacto de inicio sin desfases horarios
+        const [anioIni, mesIni, diaIni] = prestamo.fecha_inicio.split('-').map(Number);
+
+        // 2. Extraer día y mes exacto de hoy
+        const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
 
         let generado = 0;
         let mesesTranscurridos = 0;
 
-        let cursor = new Date(fechaInicio);
-        cursor.setMonth(cursor.getMonth() + 1);
+        // Bucle para avanzar cortes mes a mes, manteniendo el día fijo
+        let mesCorte = mesIni + 1;
+        let anioCorte = anioIni;
 
-        while (cursor <= hoyDate) {
+        // Condición para contar los cortes: El corte debe ser anterior o igual a hoy
+        while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
             mesesTranscurridos++;
-            const abonosHastaEseMes = movimientos
-                .filter(m => m.tipo === 'abono_capital' && new Date(m.fecha + 'T12:00:00') <= cursor)
-                .reduce((sum, m) => sum + parseFloat(m.monto), 0);
 
-            const capitalBaseDelMes = Math.max(0, capitalOriginal - abonosHastaEseMes);
-            generado += (capitalBaseDelMes * 0.20);
-            cursor.setMonth(cursor.getMonth() + 1);
+            // Construir la fecha exacta del corte que se está evaluando
+            const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaIni);
+
+            const abonosHastaEseCorte = movimientos
+                .filter(m => m.tipo === 'abono_capital')
+                .reduce((sum, m) => {
+                    const [mAnio, mMes, mDia] = m.fecha.split('-').map(Number);
+                    const fechaMovimiento = new Date(mAnio, mMes - 1, mDia);
+                    return fechaMovimiento <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
+                }, 0);
+
+            const capitalBaseDelCorte = Math.max(0, capitalOriginal - abonosHastaEseCorte);
+            generado += (capitalBaseDelCorte * 0.20);
+
+            // Avanzar al siguiente mes
+            mesCorte++;
+            if (mesCorte > 12) {
+                mesCorte = 1;
+                anioCorte++;
+            }
         }
 
         const pagado = movimientos
@@ -54,15 +83,18 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
 
         const pendiente = generado - pagado;
 
-        const proxCorte = new Date(fechaInicio);
-        proxCorte.setMonth(proxCorte.getMonth() + mesesTranscurridos + 1);
+        // Calcular la fecha del PRÓXIMO corte visual
+        const proximoMesCorte = mesIni + mesesTranscurridos + 1;
+        const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaIni);
+        // Formatear proximo corte evitando husos horarios (ej. 2026-11-03)
+        const proximoCorteStr = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
 
         setCalculos({
             meses: mesesTranscurridos,
             generado,
             pagado,
             pendiente,
-            proximoCorte: proxCorte.toISOString().split('T')[0]
+            proximoCorte: proximoCorteStr
         });
 
     }, [movimientos, prestamo, cargando, hoyStr]);
@@ -83,6 +115,30 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
         const { error } = await supabase.from('prestamos').update({ cobrador: nuevoCobrador }).eq('id', prestamo.id);
         if (!error && onUpdate) onUpdate();
         else setCobradorLocal(prestamo.cobrador || 'principal');
+    };
+
+    const confirmarCambioFecha = () => {
+        setModalConf({
+            isOpen: true,
+            titulo: 'Cambiar Fecha de Inicio',
+            mensaje: `¿Estás seguro de modificar la fecha de inicio del préstamo al ${nuevaFecha}? Esto recalculará todo el interés pendiente alineando los cortes a este día.`,
+            accion: () => ejecutarCambioFecha()
+        });
+    };
+
+    const ejecutarCambioFecha = async () => {
+        setModalConf({ isOpen: false, accion: null });
+        const { error } = await supabase
+            .from('prestamos')
+            .update({ fecha_inicio: nuevaFecha })
+            .eq('id', prestamo.id);
+
+        if (!error) {
+            setEditandoFecha(false);
+            if (onUpdate) onUpdate();
+        } else {
+            alert("Error al cambiar la fecha de inicio.");
+        }
     };
 
     const registrarMovimiento = async () => {
@@ -155,9 +211,31 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                     <span className="w-24 text-neutral-400">Cliente:</span>
                                     <span className="truncate">{prestamo.clientes?.nombre}</span>
                                 </div>
-                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
+                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 items-center min-h-[28px]">
                                     <span className="w-24 text-neutral-400">Inicio:</span>
-                                    <span>{prestamo.fecha_inicio || 'N/A'}</span>
+                                    {editandoFecha ? (
+                                        <div className="flex items-center gap-2 flex-1 animate-fade-in">
+                                            <input
+                                                type="date"
+                                                value={nuevaFecha}
+                                                onChange={(e) => setNuevaFecha(e.target.value)}
+                                                className="flex-1 text-xs font-black bg-white border border-amber-300 rounded p-1 outline-none focus:border-amber-500"
+                                            />
+                                            <button onClick={confirmarCambioFecha} className="text-white bg-green-500 hover:bg-green-600 rounded p-1.5 shadow-sm transition">
+                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                                            </button>
+                                            <button onClick={() => { setEditandoFecha(false); setNuevaFecha(prestamo.fecha_inicio); }} className="text-white bg-red-500 hover:bg-red-600 rounded p-1.5 shadow-sm transition">
+                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-center gap-3">
+                                            <span>{prestamo.fecha_inicio || 'N/A'}</span>
+                                            <button onClick={() => setEditandoFecha(true)} className="text-[9px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-black uppercase tracking-wider hover:bg-amber-200 transition border border-amber-200">
+                                                ✏️ Editar
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
                                     <span className="w-24 text-neutral-400">Capital Actual:</span>
@@ -169,7 +247,6 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 </div>
                             </div>
 
-                            {/* SECCIÓN DE INTERÉS ACUMULADO (SIN PARPADEO) */}
                             <div className="grid grid-cols-2 gap-2 mb-3">
                                 <div className="bg-gray-100 p-2 rounded-lg border border-gray-200 text-center">
                                     <span className="block text-[9px] font-black uppercase text-gray-500">Transcurrido</span>
@@ -198,7 +275,6 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 </div>
                             </div>
 
-                            {/* BOTONES DE ACCIÓN */}
                             <div className="space-y-4">
                                 <div className="grid grid-cols-2 gap-2">
                                     <button
