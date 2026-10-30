@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import supabase from '../supabaseClient';
 import ConfirmModal from './ConfirmModal';
 
@@ -15,9 +15,7 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
     const [editandoFecha, setEditandoFecha] = useState(false);
     const [nuevaFecha, setNuevaFecha] = useState('');
 
-    const [calculos, setCalculos] = useState({ meses: 0, generado: 0, pagado: 0, pendiente: 0, proximoCorte: '' });
-
-    // Calculo robusto de fecha local (YYYY-MM-DD)
+    // Cálculo robusto de fecha local (YYYY-MM-DD)
     const getFechaLocal = () => {
         const d = new Date();
         const offset = d.getTimezoneOffset() * 60000;
@@ -33,8 +31,20 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
         }
     }, [prestamo?.id]);
 
-    useEffect(() => {
-        if (cargando || !prestamo?.fecha_inicio) return;
+    const fetchMovimientos = async () => {
+        setCargando(true);
+        const { data } = await supabase
+            .from('movimientos_mensuales')
+            .select('*')
+            .eq('prestamo_id', prestamo.id)
+            .order('fecha', { ascending: false });
+        if (data) setMovimientos(data);
+        setCargando(false);
+    };
+
+    // --- CÁLCULO INSTANTÁNEO OPTIMIZADO (MEMOIZADO) ---
+    const calculos = useMemo(() => {
+        if (!prestamo?.fecha_inicio) return { meses: 0, generado: 0, pagado: 0, pendiente: 0, proximoCorte: '' };
 
         const capitalOriginal = parseFloat(prestamo.monto_total);
 
@@ -86,29 +96,16 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
         // Calcular la fecha del PRÓXIMO corte visual
         const proximoMesCorte = mesIni + mesesTranscurridos + 1;
         const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaIni);
-        // Formatear proximo corte evitando husos horarios (ej. 2026-11-03)
         const proximoCorteStr = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
 
-        setCalculos({
+        return {
             meses: mesesTranscurridos,
             generado,
             pagado,
             pendiente,
             proximoCorte: proximoCorteStr
-        });
-
-    }, [movimientos, prestamo, cargando, hoyStr]);
-
-    const fetchMovimientos = async () => {
-        setCargando(true);
-        const { data } = await supabase
-            .from('movimientos_mensuales')
-            .select('*')
-            .eq('prestamo_id', prestamo.id)
-            .order('fecha', { ascending: false });
-        if (data) setMovimientos(data);
-        setCargando(false);
-    };
+        };
+    }, [movimientos, prestamo, hoyStr]);
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
         setCobradorLocal(nuevoCobrador);

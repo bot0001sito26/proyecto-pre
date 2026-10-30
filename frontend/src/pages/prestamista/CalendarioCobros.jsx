@@ -18,7 +18,6 @@ export default function CalendarioCobros() {
     const [fecha, setFecha] = useState(hoyStr);
     const [cobradorActivo, setCobradorActivo] = useState('todos');
 
-    // Cambiamos el nombre del caché a _v3 para evitar el error de la estructura vieja
     const [pagos, setPagos] = useState(() => {
         try {
             const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v3'));
@@ -70,7 +69,7 @@ export default function CalendarioCobros() {
                 // Si la cuota tocaba pagar hoy
                 if (cuota.fecha_cobro === fecha) {
                     mapa[pId].tieneCuotaProgramadaHoy = true;
-                    mapa[pId].estadoDisplay = cuota.estado_cobro;
+                    mapa[pId].estadoDisplay = cuota.estado_cobro; // Puede venir como 'pendiente', 'pagado' o 'no_pago'
                 }
 
                 // Si la cuota se pagó físicamente hoy (sin importar de qué día era)
@@ -80,10 +79,14 @@ export default function CalendarioCobros() {
                 }
             });
 
-            // Si entró dinero físico hoy, lo mostramos como pagado de una
+            // Lógica exacta de visualización
             Object.values(mapa).forEach(item => {
                 if (item.montoIngresadoFisicamenteHoy > 0) {
+                    // Si entró dinero físico hoy, es un pago del día
                     item.estadoDisplay = 'pagado';
+                } else if (item.tieneCuotaProgramadaHoy && item.estadoDisplay === 'pagado') {
+                    // Si NO entró dinero hoy, pero su cuota de hoy ya estaba pagada (por adelantado)
+                    item.estadoDisplay = 'al_dia';
                 }
             });
 
@@ -96,20 +99,22 @@ export default function CalendarioCobros() {
 
     const pagosFiltrados = useMemo(() => {
         const filtrados = pagos.filter(item => {
-            // Se añade el seguro opcional (?.) para evitar errores si el caché fallara
             const cobradorReal = item?.prestamo?.cobrador || 'principal';
             return cobradorActivo === 'todos' || cobradorReal === cobradorActivo;
         });
 
         return filtrados.sort((a, b) => {
-            if (a.estadoDisplay === 'pagado' && b.estadoDisplay !== 'pagado') return 1;
-            if (a.estadoDisplay !== 'pagado' && b.estadoDisplay === 'pagado') return -1;
+            // Orden jerárquico: 1. Atrasados, 2. Pendientes, 3. Al Día, 4. Pagados
+            const orden = { 'no_pago': 1, 'pendiente': 2, 'al_dia': 3, 'pagado': 4 };
+            const pesoA = orden[a.estadoDisplay] || 2;
+            const pesoB = orden[b.estadoDisplay] || 2;
+
+            if (pesoA !== pesoB) return pesoA - pesoB;
             return a.prestamo.clientes.nombre.localeCompare(b.prestamo.clientes.nombre);
         });
     }, [pagos, cobradorActivo]);
 
     const totalEsperado = pagosFiltrados.reduce((sum, item) => sum + (item.tieneCuotaProgramadaHoy ? Number(item.prestamo.valor_cuota) : 0), 0);
-    // El total cobrado de la ruta SOLO suma el dinero que entró físicamente ese día
     const totalCobrado = pagosFiltrados.reduce((sum, item) => sum + item.montoIngresadoFisicamenteHoy, 0);
 
     const descargarPDF = () => {
@@ -223,7 +228,9 @@ export default function CalendarioCobros() {
                     ) : (
                         pagosFiltrados.map((item) => (
                             <div key={item.prestamo.id} className={`bg-white p-4 rounded-2xl shadow-sm border-l-4 transition-all hover:shadow-md ${item.estadoDisplay === 'pagado' ? 'border-l-green-500 opacity-75' :
-                                item.estadoDisplay === 'no_pago' ? 'border-l-red-500' : 'border-l-amber-400'
+                                item.estadoDisplay === 'no_pago' ? 'border-l-red-500' :
+                                    item.estadoDisplay === 'al_dia' ? 'border-l-blue-400 opacity-80' :
+                                        'border-l-amber-400'
                                 }`}>
                                 <div className="flex justify-between items-center">
                                     <div>
@@ -233,8 +240,15 @@ export default function CalendarioCobros() {
                                             {item.prestamo.clientes.telefono || 'Sin número'}
                                         </p>
                                         <div className="flex items-center gap-2">
-                                            <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md ${item.estadoDisplay === 'pagado' ? 'bg-green-50 text-green-600 border border-green-200' : item.estadoDisplay === 'no_pago' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-amber-50 text-amber-600 border border-amber-200'}`}>
-                                                {item.estadoDisplay === 'pagado' ? '✓ Cobrado' : item.estadoDisplay === 'no_pago' ? '✗ Atrasado' : 'Pendiente'}
+                                            <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md ${item.estadoDisplay === 'pagado' ? 'bg-green-50 text-green-600 border border-green-200' :
+                                                item.estadoDisplay === 'no_pago' ? 'bg-red-50 text-red-600 border border-red-200' :
+                                                    item.estadoDisplay === 'al_dia' ? 'bg-blue-50 text-blue-600 border border-blue-200' :
+                                                        'bg-amber-50 text-amber-600 border border-amber-200'
+                                                }`}>
+                                                {item.estadoDisplay === 'pagado' ? '✓ Cobrado' :
+                                                    item.estadoDisplay === 'no_pago' ? '✗ Atrasado' :
+                                                        item.estadoDisplay === 'al_dia' ? 'Al Día' :
+                                                            'Pendiente'}
                                             </span>
                                             {item.prestamo.cobrador === 'ayudante' && (
                                                 <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">
@@ -247,15 +261,9 @@ export default function CalendarioCobros() {
                                     <div className="text-right flex flex-col items-end">
                                         {item.estadoDisplay === 'pagado' ? (
                                             <>
-                                                {/* 
-                                                    Si miramos el martes, muestra los $6.00 (montoIngresadoFisicamenteHoy).
-                                                    Si miramos el lunes (ya se pagó, pero entró en otra fecha), muestra $3.00 (valor de su cuota base). 
-                                                */}
                                                 <p className="font-black text-green-600 text-2xl">
                                                     ${item.montoIngresadoFisicamenteHoy > 0 ? item.montoIngresadoFisicamenteHoy.toFixed(2) : Number(item.prestamo.valor_cuota).toFixed(2)}
                                                 </p>
-
-                                                {/* La etiqueta de "2 cuotas" solo se muestra en el día en que entraron múltiples pagos */}
                                                 {item.cuotasPagadasHoy > 1 && (
                                                     <p className="text-[9px] font-black text-green-700 bg-green-100 px-2 py-0.5 rounded-full mt-1 uppercase tracking-wider">
                                                         {item.cuotasPagadasHoy} cuotas

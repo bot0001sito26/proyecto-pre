@@ -29,7 +29,6 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
     doc.setTextColor(100, 100, 100);
     doc.text(`Reporte de Ruta - Fecha: ${fecha}`, 14, 28);
 
-    // NUEVAS COLUMNAS: Cuota Base, Cantidad (Nº de Cuotas) y Total ($)
     const tableColumn = ["#", "Cliente", "Teléfono", "Mod.", "Cuota", "Cant.", "Total", "Estado", "Motivo"];
     const tableRows = [];
 
@@ -37,6 +36,7 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
         let estadoTexto = 'Pendiente';
         if (p.estado_cobro === 'pagado') estadoTexto = 'Pagado';
         else if (p.estado_cobro === 'no_pago') estadoTexto = 'Atrasado';
+        else if (p.estado_cobro === 'al_dia') estadoTexto = 'Al Día'; // <--- AGREGADO AQUI
 
         const esPeriodico = p.prestamos.tipo_prestamo === 'mensual_interes';
         const modalidadTexto = esPeriodico ? 'Mensual' : (p.prestamos.frecuencia ? p.prestamos.frecuencia.charAt(0).toUpperCase() + p.prestamos.frecuencia.slice(1, 4) : 'Diar');
@@ -44,11 +44,8 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
         const cuotaBase = Number(p.prestamos.valor_cuota).toFixed(2);
         const totalPagado = Number(p.monto_recibido).toFixed(2);
 
-        // Cálculo de cantidad de cuotas pagadas
         let cantidadCuotas = '-';
         if (estadoTexto === 'Pagado') {
-            // Si pasamos cuotasPagadasHoy desde el componente, lo usamos. 
-            // Si no, lo calculamos dividiendo el monto recibido entre la cuota base.
             cantidadCuotas = p.cuotasPagadasHoy || Math.max(1, Math.round(Number(p.monto_recibido) / Number(p.prestamos.valor_cuota)));
         }
 
@@ -75,7 +72,6 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
         headStyles: { fillColor: [245, 158, 11], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
         styles: { fontSize: 8, cellPadding: 2 },
         alternateRowStyles: { fillColor: [250, 250, 250] },
-        // Ajustamos anchos para que quepan las 9 columnas sin romper el diseño
         columnStyles: {
             0: { cellWidth: 8 },
             1: { cellWidth: 35 },
@@ -88,10 +84,14 @@ export const generarReporteRutaPDF = (pagos, fecha, totalEsperado, totalCobrado)
             8: { cellWidth: 'auto' }
         },
         didParseCell: function (data) {
-            // Pintar de verde suave la fila si está pagado para identificar rápido visualmente
-            if (data.section === 'body' && data.row.raw[7] === 'Pagado') {
-                data.cell.styles.fillColor = [240, 253, 244];
-                if (data.column.index === 6) data.cell.styles.textColor = [22, 163, 74]; // Total en verde oscuro
+            if (data.section === 'body') {
+                if (data.row.raw[7] === 'Pagado') {
+                    data.cell.styles.fillColor = [240, 253, 244]; // Verde suave
+                    if (data.column.index === 6) data.cell.styles.textColor = [22, 163, 74];
+                } else if (data.row.raw[7] === 'Al Día') {
+                    data.cell.styles.fillColor = [239, 246, 255]; // Azul suave
+                    data.cell.styles.textColor = [30, 64, 175]; // Letra azul oscura
+                }
             }
         }
     });
@@ -174,7 +174,6 @@ export const generarReporteCarteraPDF = async (prestamos, fechaDesde, fechaHasta
             fechaFinEstimada = fecha.toISOString().split('T')[0];
         }
 
-        // LA MAGIA DEL RETROVISOR TEMPORAL
         let estadoRealParaElCorte = p.estado;
         if ((p.estado === 'completado' || p.estado === 'renovado') && !esModoTodosLosActivos) {
             if (p.fecha_cierre && p.fecha_cierre > fechaHasta) {

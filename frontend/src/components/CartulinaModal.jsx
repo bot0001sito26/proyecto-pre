@@ -11,6 +11,10 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     const [cobradorLocal, setCobradorLocal] = useState(prestamo?.cobrador || 'principal');
     const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
 
+    // Estados para el retiro de capital parcial
+    const [montoRetiro, setMontoRetiro] = useState('');
+    const [mostrandoRetiro, setMostrandoRetiro] = useState(false);
+
     const getFechaLocal = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const hoyStr = getFechaLocal();
 
@@ -47,7 +51,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         setCargando(false);
     };
 
-    // 1. Prepara el nuevo estado y pide confirmación
     const cambiarEstadoCuota = (cuota) => {
         if (cuota.estado_cobro === 'renovado' || prestamo.estado !== 'activo') return;
 
@@ -69,25 +72,19 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         });
     };
 
-    // 2. Ejecuta el cambio visual y en BD tras confirmar
     const ejecutarCambioEstado = async (cuota, nuevoEstado) => {
-        setModalConf({ isOpen: false, accion: null }); // Cierra el modal
+        setModalConf({ isOpen: false, accion: null });
 
-        // Si no nos pasan fechaRuta, usamos hoy
         const fechaOperacion = fechaRuta || hoyStr;
-
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
-        // La magia ocurre aquí: guardamos EL DÍA REAL EN QUE SE HIZO EL COBRO
         const fechaPagoReal = nuevoEstado === 'pagado' ? fechaOperacion : null;
 
-        // Actualización optimista (cambia el color instantáneamente en pantalla)
         setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto, fecha_pago_real: fechaPagoReal } : c));
 
-        // Guardado en la base de datos en segundo plano
         const { error } = await supabase.from('historial_pagos').update({
             estado_cobro: nuevoEstado,
             monto_recibido: monto,
-            fecha_pago_real: fechaPagoReal // <-- Lo inyectamos a Supabase
+            fecha_pago_real: fechaPagoReal
         }).eq('id', cuota.id);
 
         if (!error && onUpdate) {
@@ -123,7 +120,62 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         });
     };
 
+    // --- LÓGICA MÁGICA DE RETIRO DE CAPITAL PARCIAL CON VALIDACIONES ---
+    const confirmarRetiroCapital = () => {
+        const retiroNum = parseFloat(montoRetiro);
+
+        if (!retiroNum || retiroNum <= 0) {
+            alert('El monto a retirar debe ser mayor a $0.');
+            return;
+        }
+
+        if (retiroNum > Number(prestamo.monto_capital)) {
+            alert(`No puedes retirar más del capital activo ($${prestamo.monto_capital}).`);
+            return;
+        }
+
+        setModalConf({
+            isOpen: true,
+            titulo: 'Extraer Capital Vivo',
+            mensaje: `Vas a retirar $${retiroNum.toFixed(2)}. Esto restará capital activo de este crédito sin afectar la deuda del cliente. ¿Continuar?`,
+            accion: () => ejecutarRetiroCapital(retiroNum)
+        });
+    };
+
+    const ejecutarRetiroCapital = async (monto) => {
+        setModalConf({ isOpen: false, accion: null });
+
+        const registroRetiro = {
+            prestamo_id: prestamo.id,
+            fecha: hoyStr,
+            tipo: 'retiro_capital',
+            monto: monto,
+            notas: 'Retiro parcial de capital desde cartulina activa'
+        };
+        await supabase.from('movimientos_mensuales').insert([registroRetiro]);
+
+        const nuevoCapital = Number(prestamo.monto_capital) - monto;
+
+        const { error } = await supabase.from('prestamos')
+            .update({ monto_capital: nuevoCapital })
+            .eq('id', prestamo.id);
+
+        if (!error) {
+            setMontoRetiro('');
+            setMostrandoRetiro(false);
+
+            prestamo.monto_capital = nuevoCapital;
+            if (onUpdate) onUpdate();
+
+            alert(`$${monto} extraídos. El Capital Activo de este préstamo ha bajado.`);
+        } else {
+            alert('Hubo un error al retirar el capital.');
+        }
+    };
+
     const cuotasConNotas = cuotas.filter(c => c.notas && c.notas.trim() !== '');
+    const cuotasPagadas = cuotas.filter(c => c.estado_cobro === 'pagado').length;
+    const dineroRecuperadoFisico = cuotasPagadas * prestamo.valor_cuota;
 
     return (
         <>
@@ -250,6 +302,58 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                 </div>
                             </div>
                         )}
+
+                        {/* SECCIÓN DE EXTRACCIÓN DE CAPITAL (Siempre visible) */}
+                        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
+                            <div className="flex justify-between items-center border-b border-blue-200/50 pb-2">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-blue-800">
+                                    Total Recaudado
+                                </span>
+                                <span className="text-sm font-black text-blue-900">${dineroRecuperadoFisico.toFixed(2)}</span>
+                            </div>
+
+                            <div className="flex justify-between items-center">
+                                <span className="text-[11px] font-black uppercase tracking-widest text-blue-900 flex items-center gap-1">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                    Capital Activo (Calle)
+                                </span>
+                                <span className="text-lg font-black text-blue-900">${Number(prestamo.monto_capital).toFixed(2)}</span>
+                            </div>
+
+                            {!mostrandoRetiro ? (
+                                <button
+                                    onClick={() => setMostrandoRetiro(true)}
+                                    disabled={prestamo.monto_capital <= 0}
+                                    className={`mt-1 bg-white border border-blue-300 text-blue-700 text-xs font-bold py-2.5 rounded-lg transition shadow-sm ${prestamo.monto_capital <= 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-100'}`}
+                                >
+                                    Extraer Capital a Caja
+                                </button>
+                            ) : (
+                                <div className="flex gap-2 mt-1 animate-fade-in">
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="0.01"
+                                        value={montoRetiro}
+                                        onChange={(e) => {
+                                            const val = e.target.value;
+                                            if (val === '' || Number(val) >= 0) {
+                                                setMontoRetiro(val);
+                                            }
+                                        }}
+                                        placeholder="Monto ($)"
+                                        className="w-2/3 border border-blue-300 rounded-lg p-2 text-xs font-bold outline-none focus:border-blue-500 bg-white"
+                                        autoFocus
+                                    />
+                                    <button
+                                        onClick={confirmarRetiroCapital}
+                                        className="w-1/3 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition shadow-sm"
+                                    >
+                                        Retirar
+                                    </button>
+                                </div>
+                            )}
+                        </div>
 
                         <div className="flex flex-col gap-2 bg-gray-50 p-3 rounded-xl border border-gray-100 mt-2">
                             <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest text-center">
