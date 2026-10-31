@@ -9,63 +9,64 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
     const [notaAccion, setNotaAccion] = useState('');
     const [tipoAccion, setTipoAccion] = useState(null);
 
-    const [cobradorLocal, setCobradorLocal] = useState(prestamo?.cobrador || 'principal');
-    const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
+    // NUEVO ESTADO PARA LA LIQUIDACIÓN ANTICIPADA
+    const [modoLiquidacion, setModoLiquidacion] = useState(false);
+    const [interesLiquidacion, setInteresLiquidacion] = useState('');
 
+    const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
     const [editandoFecha, setEditandoFecha] = useState(false);
     const [nuevaFecha, setNuevaFecha] = useState('');
 
-    // Cálculo robusto de fecha local (YYYY-MM-DD)
-    const getFechaLocal = () => {
+    const hoyStr = useMemo(() => {
         const d = new Date();
         const offset = d.getTimezoneOffset() * 60000;
         return new Date(d.getTime() - offset).toISOString().split('T')[0];
-    };
-    const hoyStr = getFechaLocal();
+    }, []);
+
+    const prestamoId = prestamo?.id;
+    const fechaInicio = prestamo?.fecha_inicio;
+    const montoTotal = prestamo?.monto_total;
+    const montoCapital = prestamo?.monto_capital;
+    const cobrador = prestamo?.cobrador;
+    const clienteNombre = prestamo?.clientes?.nombre;
+    const prestamoEstado = prestamo?.estado;
+
+    const [cobradorLocal, setCobradorLocal] = useState(cobrador || 'principal');
 
     useEffect(() => {
-        if (prestamo?.id) {
-            setCobradorLocal(prestamo.cobrador || 'principal');
-            setNuevaFecha(prestamo.fecha_inicio || '');
+        if (prestamoId) {
+            setCobradorLocal(cobrador || 'principal');
+            setNuevaFecha(fechaInicio || '');
+            setModoLiquidacion(false);
             fetchMovimientos();
         }
-    }, [prestamo?.id]);
+    }, [prestamoId]);
 
     const fetchMovimientos = async () => {
         setCargando(true);
         const { data } = await supabase
             .from('movimientos_mensuales')
             .select('*')
-            .eq('prestamo_id', prestamo.id)
+            .eq('prestamo_id', prestamoId)
             .order('fecha', { ascending: false });
         if (data) setMovimientos(data);
         setCargando(false);
     };
 
-    // --- CÁLCULO INSTANTÁNEO OPTIMIZADO (MEMOIZADO) ---
     const calculos = useMemo(() => {
-        if (!prestamo?.fecha_inicio) return { meses: 0, generado: 0, pagado: 0, pendiente: 0, proximoCorte: '' };
+        if (!fechaInicio) return { meses: 0, generado: 0, pagado: 0, pendiente: 0, proximoCorte: '' };
 
-        const capitalOriginal = parseFloat(prestamo.monto_total);
-
-        // 1. Extraer día y mes exacto de inicio sin desfases horarios
-        const [anioIni, mesIni, diaIni] = prestamo.fecha_inicio.split('-').map(Number);
-
-        // 2. Extraer día y mes exacto de hoy
+        const capitalOriginal = parseFloat(montoTotal);
+        const [anioIni, mesIni, diaIni] = fechaInicio.split('-').map(Number);
         const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
 
         let generado = 0;
         let mesesTranscurridos = 0;
-
-        // Bucle para avanzar cortes mes a mes, manteniendo el día fijo
         let mesCorte = mesIni + 1;
         let anioCorte = anioIni;
 
-        // Condición para contar los cortes: El corte debe ser anterior o igual a hoy
         while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
             mesesTranscurridos++;
-
-            // Construir la fecha exacta del corte que se está evaluando
             const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaIni);
 
             const abonosHastaEseCorte = movimientos
@@ -79,7 +80,6 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
             const capitalBaseDelCorte = Math.max(0, capitalOriginal - abonosHastaEseCorte);
             generado += (capitalBaseDelCorte * 0.20);
 
-            // Avanzar al siguiente mes
             mesCorte++;
             if (mesCorte > 12) {
                 mesCorte = 1;
@@ -93,7 +93,6 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
 
         const pendiente = generado - pagado;
 
-        // Calcular la fecha del PRÓXIMO corte visual
         const proximoMesCorte = mesIni + mesesTranscurridos + 1;
         const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaIni);
         const proximoCorteStr = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
@@ -105,13 +104,17 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
             pendiente,
             proximoCorte: proximoCorteStr
         };
-    }, [movimientos, prestamo, hoyStr]);
+    }, [movimientos, fechaInicio, montoTotal, hoyStr]);
+
+    const interesSugerido = useMemo(() => {
+        return (parseFloat(montoCapital || 0) * 0.20).toFixed(2);
+    }, [montoCapital]);
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
         setCobradorLocal(nuevoCobrador);
-        const { error } = await supabase.from('prestamos').update({ cobrador: nuevoCobrador }).eq('id', prestamo.id);
+        const { error } = await supabase.from('prestamos').update({ cobrador: nuevoCobrador }).eq('id', prestamoId);
         if (!error && onUpdate) onUpdate();
-        else setCobradorLocal(prestamo.cobrador || 'principal');
+        else setCobradorLocal(cobrador || 'principal');
     };
 
     const confirmarCambioFecha = () => {
@@ -125,17 +128,11 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
 
     const ejecutarCambioFecha = async () => {
         setModalConf({ isOpen: false, accion: null });
-        const { error } = await supabase
-            .from('prestamos')
-            .update({ fecha_inicio: nuevaFecha })
-            .eq('id', prestamo.id);
-
+        const { error } = await supabase.from('prestamos').update({ fecha_inicio: nuevaFecha }).eq('id', prestamoId);
         if (!error) {
             setEditandoFecha(false);
             if (onUpdate) onUpdate();
-        } else {
-            alert("Error al cambiar la fecha de inicio.");
-        }
+        } else alert("Error al cambiar la fecha de inicio.");
     };
 
     const registrarMovimiento = async () => {
@@ -156,33 +153,58 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
 
     const ejecutarGuardado = async (monto) => {
         setModalConf({ isOpen: false, accion: null });
-
-        const nuevoMov = {
-            prestamo_id: prestamo.id,
-            fecha: hoyStr,
-            tipo: tipoAccion,
-            monto: monto,
-            notas: notaAccion || (tipoAccion === 'abono_capital' ? 'Abono parcial al capital' : 'Pago de interés')
-        };
+        const nuevoMov = { prestamo_id: prestamoId, fecha: hoyStr, tipo: tipoAccion, monto: monto, notas: notaAccion || (tipoAccion === 'abono_capital' ? 'Abono parcial al capital' : 'Pago de interés') };
 
         const { error } = await supabase.from('movimientos_mensuales').insert([nuevoMov]);
 
         if (!error) {
             if (tipoAccion === 'abono_capital') {
-                const nuevoCapital = Math.max(0, parseFloat(prestamo.monto_capital) - monto);
-                await supabase.from('prestamos').update({ monto_capital: nuevoCapital }).eq('id', prestamo.id);
+                const nuevoCapital = Math.max(0, parseFloat(montoCapital) - monto);
+                await supabase.from('prestamos').update({ monto_capital: nuevoCapital }).eq('id', prestamoId);
             }
             setMontoAccion('');
             setNotaAccion('');
             setTipoAccion(null);
             fetchMovimientos();
             if (onUpdate) onUpdate();
-        } else {
-            alert("Error al registrar el movimiento.");
-        }
+        } else alert("Error al registrar el movimiento.");
     };
 
-    const interesSugerido = (parseFloat(prestamo.monto_capital) * 0.20).toFixed(2);
+    // --- NUEVAS FUNCIONES PARA LIQUIDACIÓN ---
+    const confirmarLiquidacion = () => {
+        const intCobrado = parseFloat(interesLiquidacion) || 0;
+        setModalConf({
+            isOpen: true,
+            titulo: 'Confirmar Liquidación',
+            mensaje: `Se registrará el pago del capital total ($${montoCapital}) y un interés final de $${intCobrado.toFixed(2)}. El crédito quedará FINALIZADO. ¿Continuar?`,
+            accion: () => ejecutarLiquidacion(intCobrado)
+        });
+    };
+
+    const ejecutarLiquidacion = async (intCobrado) => {
+        setModalConf({ isOpen: false, accion: null });
+        setCargando(true);
+
+        const capPendiente = parseFloat(montoCapital) || 0;
+        const movimientosAInsertar = [];
+
+        if (capPendiente > 0) {
+            movimientosAInsertar.push({ prestamo_id: prestamoId, fecha: hoyStr, tipo: 'abono_capital', monto: capPendiente, notas: 'Liquidación total del capital' });
+        }
+        if (intCobrado > 0) {
+            movimientosAInsertar.push({ prestamo_id: prestamoId, fecha: hoyStr, tipo: 'pago_interes', monto: intCobrado, notas: 'Liquidación final de interés acordado' });
+        }
+
+        if (movimientosAInsertar.length > 0) {
+            await supabase.from('movimientos_mensuales').insert(movimientosAInsertar);
+        }
+
+        // Bajamos el capital a cero en la base antes de llamar a onFinalizar que cierra todo
+        await supabase.from('prestamos').update({ monto_capital: 0 }).eq('id', prestamoId);
+
+        setModoLiquidacion(false);
+        if (onFinalizar) onFinalizar();
+    };
 
     return (
         <>
@@ -206,7 +228,7 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                             <div className="mb-4 text-sm font-bold leading-relaxed text-neutral-700">
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
                                     <span className="w-24 text-neutral-400">Cliente:</span>
-                                    <span className="truncate">{prestamo.clientes?.nombre}</span>
+                                    <span className="truncate">{clienteNombre}</span>
                                 </div>
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 items-center min-h-[28px]">
                                     <span className="w-24 text-neutral-400">Inicio:</span>
@@ -221,13 +243,13 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                             <button onClick={confirmarCambioFecha} className="text-white bg-green-500 hover:bg-green-600 rounded p-1.5 shadow-sm transition">
                                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
                                             </button>
-                                            <button onClick={() => { setEditandoFecha(false); setNuevaFecha(prestamo.fecha_inicio); }} className="text-white bg-red-500 hover:bg-red-600 rounded p-1.5 shadow-sm transition">
+                                            <button onClick={() => { setEditandoFecha(false); setNuevaFecha(fechaInicio); }} className="text-white bg-red-500 hover:bg-red-600 rounded p-1.5 shadow-sm transition">
                                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
                                             </button>
                                         </div>
                                     ) : (
                                         <div className="flex items-center gap-3">
-                                            <span>{prestamo.fecha_inicio || 'N/A'}</span>
+                                            <span>{fechaInicio || 'N/A'}</span>
                                             <button onClick={() => setEditandoFecha(true)} className="text-[9px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-black uppercase tracking-wider hover:bg-amber-200 transition border border-amber-200">
                                                 ✏️ Editar
                                             </button>
@@ -236,7 +258,7 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 </div>
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
                                     <span className="w-24 text-neutral-400">Capital Actual:</span>
-                                    <span className="text-neutral-900 text-base font-black">${prestamo.monto_capital}</span>
+                                    <span className="text-neutral-900 text-base font-black">${montoCapital}</span>
                                 </div>
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 text-amber-700 font-black">
                                     <span className="w-24 text-neutral-400">Costo / mes:</span>
@@ -276,7 +298,7 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 <div className="grid grid-cols-2 gap-2">
                                     <button
                                         onClick={() => setTipoAccion('abono_capital')}
-                                        disabled={cargando}
+                                        disabled={cargando || modoLiquidacion}
                                         className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'abono_capital' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 disabled:opacity-50'}`}
                                     >
                                         + Abono Capital
@@ -286,7 +308,7 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                             setTipoAccion('pago_interes');
                                             if (calculos.pendiente > 0) setMontoAccion(calculos.pendiente.toFixed(2));
                                         }}
-                                        disabled={cargando}
+                                        disabled={cargando || modoLiquidacion}
                                         className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'pago_interes' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200 disabled:opacity-50'}`}
                                     >
                                         + Pago Interés
@@ -376,21 +398,65 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                         </div>
                     </div>
 
-                    <div className="p-4 border-t border-neutral-200 bg-neutral-50 flex gap-2">
-                        {prestamo.estado === 'activo' && (
+                    <div className="p-4 border-t border-neutral-200 bg-neutral-50 flex flex-col gap-2">
+                        {prestamoEstado === 'activo' && !modoLiquidacion && (
                             <button
                                 onClick={() => {
-                                    setModalConf({
-                                        isOpen: true,
-                                        titulo: 'Finalizar Crédito',
-                                        mensaje: '¿Seguro que deseas FINALIZAR este crédito?',
-                                        accion: () => { onFinalizar(); setModalConf({ isOpen: false }); }
-                                    });
+                                    setTipoAccion(null);
+                                    setInteresLiquidacion(Math.max(0, calculos.pendiente).toFixed(2));
+                                    setModoLiquidacion(true);
                                 }}
                                 className="w-full bg-amber-500 text-neutral-950 font-black uppercase tracking-wider py-3 rounded-lg hover:bg-amber-600 shadow-md text-xs flex items-center justify-center gap-2 transition"
                             >
-                                Finalizar Crédito
+                                Finalizar / Liquidar Crédito
                             </button>
+                        )}
+
+                        {modoLiquidacion && (
+                            <div className="w-full bg-red-50 border border-red-200 rounded-xl p-3 flex flex-col gap-3 animate-fade-in shadow-inner">
+                                <div className="text-center">
+                                    <span className="text-[10px] font-black uppercase text-red-600 tracking-widest">Liquidación Anticipada</span>
+                                </div>
+
+                                <div className="flex justify-between items-center text-sm border-b border-red-200 pb-1">
+                                    <span className="text-red-700 font-bold">Capital a saldar:</span>
+                                    <span className="font-black text-red-900">${montoCapital}</span>
+                                </div>
+
+                                <div className="flex flex-col gap-1">
+                                    <div className="flex justify-between items-center text-xs">
+                                        <span className="text-red-700 font-bold">Interés pendiente sugerido:</span>
+                                        <span className="font-black text-red-900">${Math.max(0, calculos.pendiente).toFixed(2)}</span>
+                                    </div>
+                                    <label className="text-[10px] font-black uppercase text-red-500 mt-1">Interés acordado a cobrar:</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 font-black text-red-700">$</span>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            value={interesLiquidacion}
+                                            onChange={(e) => setInteresLiquidacion(e.target.value)}
+                                            className="w-full bg-white border border-red-300 rounded-lg pl-7 pr-3 py-2 font-black text-red-900 outline-none focus:border-red-500 transition"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 mt-1">
+                                    <button
+                                        onClick={() => setModoLiquidacion(false)}
+                                        className="flex-1 bg-white border border-red-200 text-red-600 font-black py-2 rounded-lg text-xs uppercase tracking-wider hover:bg-red-50 transition"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        onClick={confirmarLiquidacion}
+                                        className="flex-[2] bg-red-600 text-white font-black py-2 rounded-lg text-xs uppercase tracking-wider shadow-md hover:bg-red-700 transition"
+                                    >
+                                        Confirmar Pago
+                                    </button>
+                                </div>
+                            </div>
                         )}
                     </div>
                 </div>

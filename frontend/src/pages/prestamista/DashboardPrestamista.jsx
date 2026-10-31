@@ -41,8 +41,17 @@ export default function DashboardPrestamista() {
             .lt('fecha_cobro', hoyStr)
             .order('fecha_cobro', { ascending: true });
 
+        const { data: prestamosExpirados } = await supabase
+            .from('prestamos')
+            .select(`
+                id, monto_total, valor_cuota, fecha_inicio, frecuencia, clientes ( id, nombre )
+            `)
+            .eq('estado', 'activo')
+            .neq('tipo_prestamo', 'mensual_interes');
+
         if (!error && data) {
             const mapaClientes = {};
+
             data.forEach(pago => {
                 const cliente = pago.prestamos.clientes;
                 if (!mapaClientes[cliente.id]) {
@@ -52,14 +61,53 @@ export default function DashboardPrestamista() {
                         nombre: cliente.nombre,
                         fecha_mas_antigua: pago.fecha_cobro,
                         deuda_total: Number(pago.prestamos.valor_cuota),
-                        cuotas_caidas: 1
+                        cuotas_caidas: 1,
+                        orden: 2 // Prioridad 2: Cuotas atrasadas normales
                     };
                 } else {
                     mapaClientes[cliente.id].deuda_total += Number(pago.prestamos.valor_cuota);
                     mapaClientes[cliente.id].cuotas_caidas += 1;
                 }
             });
-            const resultado = Object.values(mapaClientes);
+
+            if (prestamosExpirados) {
+                prestamosExpirados.forEach(p => {
+                    if (p.fecha_inicio && p.clientes) {
+                        const fechaInicio = new Date(p.fecha_inicio + 'T12:00:00');
+                        let diasTotales = 30;
+                        if (p.frecuencia === 'semanal') diasTotales = 28;
+                        else if (p.frecuencia === 'quincenal') diasTotales = 30;
+                        else if (p.frecuencia === 'mensual') diasTotales = 30;
+
+                        fechaInicio.setDate(fechaInicio.getDate() + diasTotales);
+                        const fechaFinStr = fechaInicio.toISOString().split('T')[0];
+
+                        if (hoyStr > fechaFinStr) {
+                            if (!mapaClientes[p.clientes.id]) {
+                                mapaClientes[p.clientes.id] = {
+                                    id: p.clientes.id,
+                                    prestamo_id: p.id,
+                                    nombre: p.clientes.nombre,
+                                    fecha_mas_antigua: fechaFinStr,
+                                    deuda_total: Number(p.monto_total || 0),
+                                    cuotas_caidas: 'Plazo Cumplido',
+                                    orden: 1 // Prioridad 1: Plazo Cumplido
+                                };
+                            } else {
+                                mapaClientes[p.clientes.id].cuotas_caidas = 'Plazo Cumplido';
+                                mapaClientes[p.clientes.id].orden = 1;
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Ordenamiento por prioridad (orden 1 primero) y luego por fecha
+            const resultado = Object.values(mapaClientes).sort((a, b) => {
+                if (a.orden !== b.orden) return a.orden - b.orden;
+                return new Date(a.fecha_mas_antigua) - new Date(b.fecha_mas_antigua);
+            });
+
             setMorosos(resultado);
             sessionStorage.setItem('anubis_morosos', JSON.stringify(resultado));
         }
@@ -120,7 +168,7 @@ export default function DashboardPrestamista() {
                             <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>
-                            Prioridad: Atrasos
+                            Prioridad: Atrasos / Vencidos
                         </h2>
                         <span className="bg-red-100 text-red-800 text-[10px] px-3 py-1 rounded-full font-black uppercase tracking-widest">
                             {morosos.length} Clientes
@@ -140,12 +188,16 @@ export default function DashboardPrestamista() {
                                     <li key={m.id} className="p-3 bg-white border border-gray-100 rounded-xl shadow-sm hover:shadow-md transition flex justify-between items-center">
                                         <div>
                                             <p className="font-bold text-neutral-800 text-sm truncate max-w-[150px]">{m.nombre}</p>
-                                            <p className="text-[10px] font-bold text-red-400 uppercase">Desde: {m.fecha_mas_antigua}</p>
+                                            {typeof m.cuotas_caidas === 'string' && (
+                                                <p className="text-[10px] font-black text-red-500 uppercase mt-1">{m.cuotas_caidas}</p>
+                                            )}
                                         </div>
                                         <div className="text-right flex items-center gap-3">
                                             <div className="text-right">
                                                 <p className="font-black text-red-600 text-base leading-none">${m.deuda_total.toFixed(2)}</p>
-                                                <span className="text-[9px] text-gray-400 font-bold uppercase">{m.cuotas_caidas} cuotas</span>
+                                                {typeof m.cuotas_caidas === 'number' && (
+                                                    <span className="text-[9px] text-gray-400 font-bold uppercase">{m.cuotas_caidas} cuotas</span>
+                                                )}
                                             </div>
                                             <Link to="/prestamos" state={{ abrirPrestamoId: m.prestamo_id }} className="bg-red-50 text-red-600 p-2 rounded-lg hover:bg-red-100 transition">
                                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -160,9 +212,7 @@ export default function DashboardPrestamista() {
                     </div>
                 </div>
 
-                {/* NUEVA SECCIÓN DIVIDIDA EN 2 COLUMNAS */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Tarjeta 1: Ruta Diaria */}
                     <div className="bg-white rounded-2xl shadow-sm overflow-hidden border border-gray-100 p-5 text-center flex flex-col justify-between h-full">
                         <div>
                             <div className="w-10 h-10 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto mb-2">
@@ -181,7 +231,6 @@ export default function DashboardPrestamista() {
                         </Link>
                     </div>
 
-                    {/* Tarjeta 2: Cobros Periódicos */}
                     <div className="bg-white rounded-2xl shadow-sm overflow-hidden border border-gray-100 p-5 text-center flex flex-col justify-between h-full">
                         <div>
                             <div className="w-10 h-10 bg-neutral-100 rounded-full flex items-center justify-center mx-auto mb-2">
@@ -200,7 +249,6 @@ export default function DashboardPrestamista() {
                         </Link>
                     </div>
                 </div>
-
             </div>
         </div>
     );
