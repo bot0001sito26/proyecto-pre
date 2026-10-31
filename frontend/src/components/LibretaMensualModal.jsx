@@ -75,7 +75,8 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
             // 2. Armamos la fecha de corte sin peligro de desbordamiento
             const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaCorteEfectivo);
 
-            const abonos = (p.movimientos_mensuales || [])
+            // CORRECCIÓN: Usamos "movimientos" en lugar de "p.movimientos_mensuales"
+            const abonos = movimientos
                 .filter(m => m.tipo === 'abono_capital')
                 .reduce((sum, m) => {
                     const [mA, mM, mD] = m.fecha.split('-').map(Number);
@@ -96,8 +97,12 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
 
         const pendiente = generado - pagado;
 
+        // CÁLCULO PROTEGIDO PARA EL TEXTO DEL PRÓXIMO CORTE
         const proximoMesCorte = mesIni + mesesTranscurridos + 1;
-        const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaIni);
+        const ultimoDiaProxMes = new Date(anioIni, proximoMesCorte, 0).getDate();
+        const diaCorteProxEfectivo = Math.min(diaIni, ultimoDiaProxMes);
+
+        const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaCorteProxEfectivo);
         const proximoCorteStr = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
 
         return {
@@ -173,7 +178,6 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
         } else alert("Error al registrar el movimiento.");
     };
 
-    // --- NUEVAS FUNCIONES PARA LIQUIDACIÓN ---
     const confirmarLiquidacion = () => {
         const intCobrado = parseFloat(interesLiquidacion) || 0;
         setModalConf({
@@ -202,7 +206,6 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
             await supabase.from('movimientos_mensuales').insert(movimientosAInsertar);
         }
 
-        // Bajamos el capital a cero en la base antes de llamar a onFinalizar que cierra todo
         await supabase.from('prestamos').update({ monto_capital: 0 }).eq('id', prestamoId);
 
         setModoLiquidacion(false);
@@ -411,7 +414,7 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
                                 }}
                                 className="w-full bg-amber-500 text-neutral-950 font-black uppercase tracking-wider py-3 rounded-lg hover:bg-amber-600 shadow-md text-xs flex items-center justify-center gap-2 transition"
                             >
-                                Finalizar / Liquidar Crédito
+                                ⚡ Finalizar / Liquidar Crédito
                             </button>
                         )}
 
