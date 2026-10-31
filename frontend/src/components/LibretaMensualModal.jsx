@@ -67,24 +67,27 @@ export default function LibretaMensualModal({ prestamo, onClose, onFinalizar, on
 
         while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
             mesesTranscurridos++;
-            const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaIni);
 
-            const abonosHastaEseCorte = movimientos
+            // 1. Calculamos cuál es el último día de este mes de corte (ej: 28 para feb, 30 para abr)
+            const ultimoDia = new Date(anioCorte, mesCorte, 0).getDate();
+            const diaCorteEfectivo = Math.min(diaIni, ultimoDia);
+
+            // 2. Armamos la fecha de corte sin peligro de desbordamiento
+            const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaCorteEfectivo);
+
+            const abonos = (p.movimientos_mensuales || [])
                 .filter(m => m.tipo === 'abono_capital')
                 .reduce((sum, m) => {
-                    const [mAnio, mMes, mDia] = m.fecha.split('-').map(Number);
-                    const fechaMovimiento = new Date(mAnio, mMes - 1, mDia);
-                    return fechaMovimiento <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
+                    const [mA, mM, mD] = m.fecha.split('-').map(Number);
+                    const fechaM = new Date(mA, mM - 1, mD);
+                    return fechaM <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
                 }, 0);
 
-            const capitalBaseDelCorte = Math.max(0, capitalOriginal - abonosHastaEseCorte);
-            generado += (capitalBaseDelCorte * 0.20);
+            const capitalBase = Math.max(0, capitalOriginal - abonos);
+            generado += (capitalBase * 0.20);
 
             mesCorte++;
-            if (mesCorte > 12) {
-                mesCorte = 1;
-                anioCorte++;
-            }
+            if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
         }
 
         const pagado = movimientos
