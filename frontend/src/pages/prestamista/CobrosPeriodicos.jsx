@@ -3,7 +3,7 @@ import supabase from '../../supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import CartulinaModal from '../../components/CartulinaModal';
-import LibretaMensualModal from '../../components/LibretaMensualModal';
+import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
 
 export default function CobrosPeriodicos() {
     const { user } = useAuth();
@@ -23,9 +23,17 @@ export default function CobrosPeriodicos() {
         if (user?.id) fetchPrestamosPeriodicos();
     }, [user, modalidadActiva]);
 
+    const sumarDias = (fechaBaseStr, dias) => {
+        const [a, m, d] = fechaBaseStr.split('-').map(Number);
+        const fecha = new Date(a, m - 1, d, 12, 0, 0);
+        fecha.setDate(fecha.getDate() + dias);
+        return fecha.toISOString().split('T')[0];
+    };
+
     const fetchPrestamosPeriodicos = async () => {
         setCargando(true);
-        const { data, error } = await supabase
+
+        let query = supabase
             .from('prestamos')
             .select(`
                 id, monto_total, monto_capital, frecuencia, fecha_inicio, estado, valor_cuota, cobrador, tipo_prestamo,
@@ -34,70 +42,122 @@ export default function CobrosPeriodicos() {
                 movimientos_mensuales ( tipo, monto, fecha )
             `)
             .eq('prestamista_id', user.id)
-            .eq('estado', 'activo')
-            .eq('frecuencia', modalidadActiva);
+            .eq('estado', 'activo');
+
+        // Lógica para filtrar los prestamos especiales (por dias)
+        if (modalidadActiva === 'especial') {
+            query = query.like('frecuencia', 'dias_%');
+        } else {
+            query = query.eq('frecuencia', modalidadActiva);
+        }
+
+        const { data, error } = await query;
 
         if (!error && data) {
             const procesados = data.map(p => {
                 let fechaVencimiento = 'Sin fecha';
                 let atrasado = false;
-                let mensajeAtraso = ''; // <-- NUEVA VARIABLE
+                let mensajeAtraso = '';
 
                 if (p.tipo_prestamo === 'mensual_interes') {
-                    const [anioIni, mesIni, diaIni] = p.fecha_inicio.split('-').map(Number);
-                    const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
 
-                    let generado = 0;
-                    let mesCorte = mesIni + 1;
-                    let anioCorte = anioIni;
-                    let mesesTranscurridos = 0;
-                    const capitalOriginal = parseFloat(p.monto_total);
+                    if (p.frecuencia.startsWith('dias_')) {
+                        // LÓGICA DE INTERÉS ABIERTO POR DÍAS (ESPECIAL)
+                        const diasFrecuencia = parseInt(p.frecuencia.split('_')[1]);
+                        const capitalOriginal = parseFloat(p.monto_total);
+                        let generado = 0;
+                        let cortesTranscurridos = 0;
 
-                    while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
-                        mesesTranscurridos++;
-                        const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaIni);
-                        const abonos = (p.movimientos_mensuales || [])
-                            .filter(m => m.tipo === 'abono_capital')
-                            .reduce((sum, m) => {
-                                const [mA, mM, mD] = m.fecha.split('-').map(Number);
-                                const fechaM = new Date(mA, mM - 1, mD);
-                                return fechaM <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
-                            }, 0);
+                        let fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia * (cortesTranscurridos + 1));
 
-                        const capitalBase = Math.max(0, capitalOriginal - abonos);
-                        generado += (capitalBase * 0.20);
+                        // Calculamos todos los cortes que ya pasaron hasta el día de hoy
+                        while (fechaCorteEfectiva <= hoyStr) {
+                            const abonosCorte = (p.movimientos_mensuales || [])
+                                .filter(m => m.tipo === 'abono_capital' && m.fecha <= fechaCorteEfectiva)
+                                .reduce((sum, m) => sum + parseFloat(m.monto), 0);
 
-                        mesCorte++;
-                        if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
-                    }
+                            const capitalBase = Math.max(0, capitalOriginal - abonosCorte);
+                            generado += (capitalBase * 0.20);
 
-                    const pagado = (p.movimientos_mensuales || [])
-                        .filter(m => m.tipo === 'pago_interes')
-                        .reduce((sum, m) => sum + parseFloat(m.monto), 0);
+                            cortesTranscurridos++;
+                            fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia * (cortesTranscurridos + 1));
+                        }
 
-                    const pendiente = generado - pagado;
+                        const pagado = (p.movimientos_mensuales || [])
+                            .filter(m => m.tipo === 'pago_interes')
+                            .reduce((sum, m) => sum + parseFloat(m.monto), 0);
 
-                    const proximoMesCorte = mesIni + mesesTranscurridos + 1;
-                    const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaIni);
-                    fechaVencimiento = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
+                        const pendiente = generado - pagado;
+                        fechaVencimiento = fechaCorteEfectiva; // El próximo corte a futuro
 
-                    // LÓGICA DE ATRASO MENSUAL
-                    if (pendiente > 0.01) {
-                        atrasado = true;
-                        mensajeAtraso = `Deuda: $${pendiente.toFixed(2)}`;
+                        if (pendiente > 0.01) {
+                            atrasado = true;
+                            mensajeAtraso = `Deuda: $${pendiente.toFixed(2)}`;
+                        }
+
+                    } else {
+                        // LÓGICA DE INTERÉS ABIERTO MENSUAL CLÁSICO
+                        const [anioIni, mesIni, diaIni] = p.fecha_inicio.split('-').map(Number);
+                        const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
+
+                        let generado = 0;
+                        let mesCorte = mesIni + 1;
+                        let anioCorte = anioIni;
+                        let mesesTranscurridos = 0;
+                        const capitalOriginal = parseFloat(p.monto_total);
+
+                        while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
+                            mesesTranscurridos++;
+                            const ultimoDia = new Date(anioCorte, mesCorte, 0).getDate();
+                            const diaCorteEfectivo = Math.min(diaIni, ultimoDia);
+                            const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaCorteEfectivo);
+
+                            const abonos = (p.movimientos_mensuales || [])
+                                .filter(m => m.tipo === 'abono_capital')
+                                .reduce((sum, m) => {
+                                    const [mA, mM, mD] = m.fecha.split('-').map(Number);
+                                    const fechaM = new Date(mA, mM - 1, mD);
+                                    return fechaM <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
+                                }, 0);
+
+                            const capitalBase = Math.max(0, capitalOriginal - abonos);
+                            generado += (capitalBase * 0.20);
+
+                            mesCorte++;
+                            if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
+                        }
+
+                        const pagado = (p.movimientos_mensuales || [])
+                            .filter(m => m.tipo === 'pago_interes')
+                            .reduce((sum, m) => sum + parseFloat(m.monto), 0);
+
+                        const pendiente = generado - pagado;
+                        const proximoMesCorte = mesIni + mesesTranscurridos + 1;
+                        const ultimoDiaProxMes = new Date(anioIni, proximoMesCorte, 0).getDate();
+                        const diaCorteProxEfectivo = Math.min(diaIni, ultimoDiaProxMes);
+                        const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaCorteProxEfectivo);
+
+                        fechaVencimiento = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
+
+                        if (pendiente > 0.01) {
+                            atrasado = true;
+                            mensajeAtraso = `Deuda: $${pendiente.toFixed(2)}`;
+                        }
                     }
 
                 } else {
+                    // LÓGICA DE CUOTA FIJA
                     const pendientes = (p.historial_pagos || [])
                         .filter(pago => pago.estado_cobro === 'pendiente' || pago.estado_cobro === 'no_pago')
                         .sort((a, b) => a.fecha_cobro.localeCompare(b.fecha_cobro));
 
                     if (pendientes.length > 0) {
                         fechaVencimiento = pendientes[0].fecha_cobro;
-                        atrasado = fechaVencimiento < hoyStr;
-                        // LÓGICA DE ATRASO CUOTA FIJA
-                        if (atrasado) {
-                            mensajeAtraso = `${pendientes.length} cuota(s) vencida(s)`;
+                        const cuotasVencidas = pendientes.filter(pago => pago.fecha_cobro < hoyStr).length;
+
+                        if (cuotasVencidas > 0) {
+                            atrasado = true;
+                            mensajeAtraso = `${cuotasVencidas} cuota(s) vencida(s)`;
                         }
                     } else {
                         fechaVencimiento = p.fecha_inicio;
@@ -132,9 +192,7 @@ export default function CobrosPeriodicos() {
     const abrirModal = (prestamo) => setPrestamoSeleccionado(prestamo);
     const renovarPrestamo = (clienteId, prestamoId) => navigate('/nuevo-prestamo', { state: { preselectClienteId: clienteId, prestamoARenovar: prestamoId } });
 
-    // ESTA ES LA FUNCIÓN QUE VAMOS A MODIFICAR LUEGO PARA LA LIQUIDACIÓN
     const finalizarPrestamo = async (datosLiquidacion = null) => {
-        // Por ahora mantengo tu lógica original, pero la prepararemos para la liquidación.
         await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0 }).eq('id', prestamoSeleccionado.id);
         if (prestamoSeleccionado.tipo_prestamo === 'cuota_fija') {
             await supabase.from('historial_pagos').update({ estado_cobro: 'pagado', monto_recibido: prestamoSeleccionado.valor_cuota, fecha_cobro: hoyStr })
@@ -156,11 +214,12 @@ export default function CobrosPeriodicos() {
                     <h1 className="text-xl font-black text-neutral-900 tracking-widest uppercase">Periódicos</h1>
                 </div>
 
-                <div className="grid grid-cols-3 gap-1 bg-gray-200 p-1 rounded-xl">
+                <div className="grid grid-cols-4 gap-1 bg-gray-200 p-1 rounded-xl">
                     {[
-                        { id: 'semanal', label: 'Semanal' },
-                        { id: 'quincenal', label: 'Quincenal' },
-                        { id: 'mensual', label: 'Mensual' }
+                        { id: 'semanal', label: 'Sem.' },
+                        { id: 'quincenal', label: 'Quin.' },
+                        { id: 'mensual', label: 'Mens.' },
+                        { id: 'especial', label: 'Especial' }
                     ].map(tab => (
                         <button
                             key={tab.id}
@@ -177,18 +236,11 @@ export default function CobrosPeriodicos() {
                     <div className="flex-1 relative">
                         <svg className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
                         <input
-                            type="text"
-                            placeholder="Buscar cliente..."
-                            value={busqueda}
-                            onChange={(e) => setBusqueda(e.target.value)}
+                            type="text" placeholder="Buscar cliente..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)}
                             className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl pl-10 pr-3 py-3 outline-none font-bold text-sm focus:border-amber-500 transition"
                         />
                     </div>
-                    <select
-                        value={cobradorActivo}
-                        onChange={(e) => setCobradorActivo(e.target.value)}
-                        className="w-full md:w-1/3 bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold text-sm focus:border-amber-500 transition"
-                    >
+                    <select value={cobradorActivo} onChange={(e) => setCobradorActivo(e.target.value)} className="w-full md:w-1/3 bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold text-sm focus:border-amber-500 transition">
                         <option value="todos">Todos (Cobradores)</option>
                         <option value="principal">Solo Míos</option>
                         <option value="ayudante">Ayudante</option>
@@ -213,14 +265,15 @@ export default function CobrosPeriodicos() {
                                             {p.clientes.telefono || 'Sin número'}
                                         </p>
 
-                                        {/* TEXTO DE ATRASO MEJORADO */}
                                         <div className={`text-[11px] font-black mb-2 flex flex-col ${p.atrasado ? 'text-red-600' : 'text-neutral-600'}`}>
                                             {p.atrasado ? (
                                                 <>
-                                                    <span className="flex items-center gap-1">
-                                                        {p.mensajeAtraso}
-                                                    </span>
-                                                    <span className="text-[9px] text-red-400 mt-0.5">Proximo corte: {p.fechaVencimiento}</span>
+                                                    <span className="flex items-center gap-1">{p.mensajeAtraso}</span>
+                                                    {p.tipo_prestamo === 'mensual_interes' ? (
+                                                        <span className="text-[9px] text-red-400 mt-0.5">Próximo corte: {p.fechaVencimiento}</span>
+                                                    ) : (
+                                                        <span className="text-[9px] text-red-400 mt-0.5">Atrasada desde: {p.fechaVencimiento}</span>
+                                                    )}
                                                 </>
                                             ) : (
                                                 `🗓️ Próximo Pago: ${p.fechaVencimiento}`
@@ -229,7 +282,9 @@ export default function CobrosPeriodicos() {
 
                                         <div className="flex items-center gap-2">
                                             {p.tipo_prestamo === 'mensual_interes' && (
-                                                <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-purple-100 text-purple-800 border border-purple-200">Interés Abierto</span>
+                                                <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded border ${p.frecuencia.startsWith('dias_') ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-purple-100 text-purple-800 border-purple-200'}`}>
+                                                    {p.frecuencia.startsWith('dias_') ? `Interés (${p.frecuencia.split('_')[1]} Días)` : 'Interés Abierto'}
+                                                </span>
                                             )}
                                             {p.cobrador === 'ayudante' && (
                                                 <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">Ayudante</span>
@@ -251,9 +306,20 @@ export default function CobrosPeriodicos() {
 
             {prestamoSeleccionado && (
                 prestamoSeleccionado.tipo_prestamo === 'mensual_interes' ? (
-                    <LibretaMensualModal prestamo={prestamoSeleccionado} onClose={() => setPrestamoSeleccionado(null)} onFinalizar={finalizarPrestamo} onUpdate={fetchPrestamosPeriodicos} />
+                    <LibretaInteresAbiertoModal
+                        prestamo={prestamoSeleccionado}
+                        onClose={() => setPrestamoSeleccionado(null)}
+                        onFinalizar={finalizarPrestamo}
+                        onUpdate={fetchPrestamosPeriodicos}
+                    />
                 ) : (
-                    <CartulinaModal prestamo={prestamoSeleccionado} onClose={() => setPrestamoSeleccionado(null)} onRenovar={renovarPrestamo} onFinalizar={finalizarPrestamo} onUpdate={fetchPrestamosPeriodicos} />
+                    <CartulinaModal
+                        prestamo={prestamoSeleccionado}
+                        onClose={() => setPrestamoSeleccionado(null)}
+                        onRenovar={renovarPrestamo}
+                        onFinalizar={finalizarPrestamo}
+                        onUpdate={fetchPrestamosPeriodicos}
+                    />
                 )
             )}
         </div>

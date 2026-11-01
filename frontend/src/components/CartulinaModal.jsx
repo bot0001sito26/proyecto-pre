@@ -22,6 +22,15 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     const getFechaLocal = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const hoyStr = getFechaLocal();
 
+    // Obtener la fecha y hora local exacta en formato SQL (YYYY-MM-DD HH:MM:SS) para Ecuador
+    const getTimestampLocalSQL = () => {
+        const ahora = new Date();
+        // Ajustar a la zona horaria de Ecuador (UTC-5)
+        const offsetEcuador = -5 * 60;
+        const localTime = new Date(ahora.getTime() + (ahora.getTimezoneOffset() + offsetEcuador) * 60000);
+        return localTime.toISOString().slice(0, 19).replace('T', ' ');
+    };
+
     useEffect(() => {
         if (prestamo?.id) {
             fetchCuotas();
@@ -93,12 +102,16 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
         const fechaPagoReal = nuevoEstado === 'pagado' ? fechaOperacion : null;
 
-        setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto, fecha_pago_real: fechaPagoReal } : c));
+        // Si se marca como pagado, registramos la hora exacta actual; si se desmarca, se limpia
+        const fechaRegistroExacta = nuevoEstado === 'pagado' ? getTimestampLocalSQL() : null;
+
+        setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto, fecha_pago_real: fechaPagoReal, fecha_registro: fechaRegistroExacta } : c));
 
         const { error } = await supabase.from('historial_pagos').update({
             estado_cobro: nuevoEstado,
             monto_recibido: monto,
-            fecha_pago_real: fechaPagoReal
+            fecha_pago_real: fechaPagoReal,
+            fecha_registro: fechaRegistroExacta
         }).eq('id', cuota.id);
 
         if (!error && onUpdate) {
@@ -111,7 +124,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     const guardarNota = async (cuotaId, nuevaNota) => {
         let notaFinal = nuevaNota.trim();
 
-        // TRUCO SIN TOCAR BASE DE DATOS: Inyectamos la fecha actual en el texto si no la tiene ya.
         if (notaFinal && !notaFinal.includes('(Anotado:')) {
             notaFinal = `${notaFinal} (Anotado: ${hoyStr})`;
         }
@@ -123,7 +135,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         }
 
         setCuotas(prev => prev.map(c => c.id === cuotaId ? { ...c, notas: notaFinal } : c));
-        setCuotaParaNota(null); // Cerramos el input luego de guardar
+        setCuotaParaNota(null);
     };
 
     const pedirConfirmacionFinalizar = () => {
@@ -186,7 +198,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         if (!error) {
             setMontoRetiro('');
             setMostrandoRetiro(false);
-            setVerCapital(false); // Cierra el acordeón al finalizar el retiro
+            setVerCapital(false);
 
             prestamo.monto_capital = nuevoCapital;
             if (onUpdate) onUpdate();
@@ -337,7 +349,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                             </div>
                         )}
 
-                        {/* SECCIÓN DE EXTRACCIÓN DE CAPITAL (Acordeón) */}
                         <div className="bg-blue-50 border border-blue-200 rounded-xl overflow-hidden shadow-sm">
                             <button
                                 onClick={() => setVerCapital(!verCapital)}

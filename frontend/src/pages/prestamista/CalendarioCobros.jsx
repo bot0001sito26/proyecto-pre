@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { generarReporteRutaPDF } from '../../utils/generarPDF';
 import CartulinaModal from '../../components/CartulinaModal';
-import LibretaMensualModal from '../../components/LibretaMensualModal';
+import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
 
 export default function CalendarioCobros() {
     const { user } = useAuth();
@@ -18,15 +18,16 @@ export default function CalendarioCobros() {
     const [fecha, setFecha] = useState(hoyStr);
     const [cobradorActivo, setCobradorActivo] = useState('todos');
 
-    const [pagos, setPagos] = useState(() => {
+    const [clientesAgrupados, setClientesAgrupados] = useState(() => {
         try {
-            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v3'));
+            // Actualizado a v7 para limpiar caché y que aparezcan las horas
+            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v7'));
             if (cache && cache.fecha === hoyStr) return cache.datos;
             return [];
         } catch { return []; }
     });
 
-    const [cargando, setCargando] = useState(pagos.length === 0);
+    const [cargando, setCargando] = useState(clientesAgrupados.length === 0);
     const [prestamoSeleccionado, setPrestamoSeleccionado] = useState(null);
 
     useEffect(() => {
@@ -34,12 +35,12 @@ export default function CalendarioCobros() {
     }, [user, fecha]);
 
     const fetchPagos = async () => {
-        if (pagos.length === 0) setCargando(true);
+        if (clientesAgrupados.length === 0) setCargando(true);
 
-        const { data } = await supabase
+        const { data, error } = await supabase
             .from('historial_pagos')
             .select(`
-                id, fecha_cobro, estado_cobro, monto_recibido, notas, fecha_pago_real,
+                id, fecha_cobro, estado_cobro, monto_recibido, notas, fecha_pago_real, fecha_registro,
                 prestamos!inner (
                     id, valor_cuota, prestamista_id, estado, monto_total, monto_capital, frecuencia, fecha_inicio, cobrador, tipo_prestamo, 
                     clientes ( id, nombre, telefono )
@@ -50,86 +51,144 @@ export default function CalendarioCobros() {
             .eq('prestamos.frecuencia', 'diario')
             .or(`fecha_cobro.eq.${fecha},fecha_pago_real.eq.${fecha}`);
 
+        if (error) console.error("Error al cargar la ruta diaria:", error);
+
         if (data) {
-            const mapa = {};
+            const mapaClientes = {};
 
             data.forEach(cuota => {
+                const cliente = cuota.prestamos.clientes;
+                const cId = cliente.id;
                 const pId = cuota.prestamos.id;
 
-                if (!mapa[pId]) {
-                    mapa[pId] = {
-                        prestamo: cuota.prestamos,
-                        montoIngresadoFisicamenteHoy: 0,
-                        cuotasPagadasHoy: 0,
-                        tieneCuotaProgramadaHoy: false,
-                        estadoDisplay: 'pendiente'
+                if (!mapaClientes[cId]) {
+                    mapaClientes[cId] = {
+                        cliente: cliente,
+                        prestamosMap: {},
+                        ultimaHoraPago: null
                     };
                 }
 
-                // Si la cuota tocaba pagar hoy
+                if (!mapaClientes[cId].prestamosMap[pId]) {
+                    mapaClientes[cId].prestamosMap[pId] = {
+                        prestamoInfo: cuota.prestamos,
+                        montoIngresadoFisicamenteHoy: 0,
+                        cuotasPagadasHoy: 0,
+                        tieneCuotaProgramadaHoy: false,
+                        estadoDisplay: 'pendiente',
+                        horaFormateada: null,
+                        horaPagoMs: 0
+                    };
+                }
+
+                const itemPrestamo = mapaClientes[cId].prestamosMap[pId];
+
                 if (cuota.fecha_cobro === fecha) {
-                    mapa[pId].tieneCuotaProgramadaHoy = true;
-                    mapa[pId].estadoDisplay = cuota.estado_cobro; // Puede venir como 'pendiente', 'pagado' o 'no_pago'
+                    itemPrestamo.tieneCuotaProgramadaHoy = true;
+                    itemPrestamo.estadoDisplay = cuota.estado_cobro;
                 }
 
-                // Si la cuota se pagó físicamente hoy (sin importar de qué día era)
                 if (cuota.fecha_pago_real === fecha && cuota.estado_cobro === 'pagado') {
-                    mapa[pId].montoIngresadoFisicamenteHoy += Number(cuota.monto_recibido || cuota.prestamos.valor_cuota);
-                    mapa[pId].cuotasPagadasHoy += 1;
+                    itemPrestamo.montoIngresadoFisicamenteHoy += Number(cuota.monto_recibido || cuota.prestamos.valor_cuota);
+                    itemPrestamo.cuotasPagadasHoy += 1;
+
+                    if (cuota.fecha_registro) {
+                        const fechaObj = new Date(cuota.fecha_registro);
+                        const horaCuota = fechaObj.getTime();
+
+                        // Guardar la hora máxima para ordenar al cliente general
+                        if (!mapaClientes[cId].ultimaHoraPago || horaCuota > mapaClientes[cId].ultimaHoraPago) {
+                            mapaClientes[cId].ultimaHoraPago = horaCuota;
+                        }
+
+                        // Guardar la hora formateada para mostrarla en la UI del préstamo
+                        if (horaCuota > itemPrestamo.horaPagoMs) {
+                            itemPrestamo.horaPagoMs = horaCuota;
+                            itemPrestamo.horaFormateada = fechaObj.toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit', hour12: true });
+                        }
+                    }
                 }
             });
 
-            // Lógica exacta de visualización
-            Object.values(mapa).forEach(item => {
-                if (item.montoIngresadoFisicamenteHoy > 0) {
-                    // Si entró dinero físico hoy, es un pago del día
-                    item.estadoDisplay = 'pagado';
-                } else if (item.tieneCuotaProgramadaHoy && item.estadoDisplay === 'pagado') {
-                    // Si NO entró dinero hoy, pero su cuota de hoy ya estaba pagada (por adelantado)
-                    item.estadoDisplay = 'al_dia';
-                }
+            const arrayClientes = Object.values(mapaClientes).map(clienteData => {
+                const prestamosDelCliente = Object.values(clienteData.prestamosMap);
+
+                prestamosDelCliente.forEach(p => {
+                    if (p.montoIngresadoFisicamenteHoy > 0) p.estadoDisplay = 'pagado';
+                    else if (p.tieneCuotaProgramadaHoy && p.estadoDisplay === 'pagado') p.estadoDisplay = 'al_dia';
+                });
+
+                const estados = prestamosDelCliente.map(p => p.estadoDisplay);
+                let estadoGlobal = 'pendiente';
+                if (estados.includes('no_pago')) estadoGlobal = 'no_pago';
+                else if (estados.includes('pendiente')) estadoGlobal = 'pendiente';
+                else if (estados.every(e => e === 'pagado')) estadoGlobal = 'pagado';
+                else if (estados.every(e => e === 'al_dia' || e === 'pagado')) estadoGlobal = 'al_dia';
+
+                return {
+                    cliente: clienteData.cliente,
+                    listaPrestamos: prestamosDelCliente,
+                    estadoGlobal: estadoGlobal,
+                    ultimaHoraPago: clienteData.ultimaHoraPago
+                };
             });
 
-            const datosAgrupados = Object.values(mapa);
-            setPagos(datosAgrupados);
-            sessionStorage.setItem('anubis_ruta_diaria_v3', JSON.stringify({ fecha: fecha, datos: datosAgrupados }));
+            setClientesAgrupados(arrayClientes);
+            sessionStorage.setItem('anubis_ruta_diaria_v7', JSON.stringify({ fecha: fecha, datos: arrayClientes }));
         }
         setCargando(false);
     };
 
-    const pagosFiltrados = useMemo(() => {
-        const filtrados = pagos.filter(item => {
-            const cobradorReal = item?.prestamo?.cobrador || 'principal';
-            return cobradorActivo === 'todos' || cobradorReal === cobradorActivo;
+    const clientesFiltrados = useMemo(() => {
+        const filtrados = clientesAgrupados.filter(c => {
+            return cobradorActivo === 'todos' || c.listaPrestamos.some(p => (p.prestamoInfo.cobrador || 'principal') === cobradorActivo);
         });
 
         return filtrados.sort((a, b) => {
-            // Orden jerárquico: 1. Atrasados, 2. Pendientes, 3. Al Día, 4. Pagados
             const orden = { 'no_pago': 1, 'pendiente': 2, 'al_dia': 3, 'pagado': 4 };
-            const pesoA = orden[a.estadoDisplay] || 2;
-            const pesoB = orden[b.estadoDisplay] || 2;
+            const pesoA = orden[a.estadoGlobal] || 2;
+            const pesoB = orden[b.estadoGlobal] || 2;
 
+            // 1. Agrupar por estado (Pendientes arriba, Pagados abajo)
             if (pesoA !== pesoB) return pesoA - pesoB;
-            return a.prestamo.clientes.nombre.localeCompare(b.prestamo.clientes.nombre);
-        });
-    }, [pagos, cobradorActivo]);
 
-    const totalEsperado = pagosFiltrados.reduce((sum, item) => sum + (item.tieneCuotaProgramadaHoy ? Number(item.prestamo.valor_cuota) : 0), 0);
-    const totalCobrado = pagosFiltrados.reduce((sum, item) => sum + item.montoIngresadoFisicamenteHoy, 0);
+            // 2. Orden Cronológico para los pagados (el último que pagó se pone arriba del bloque de pagados)
+            if (pesoA === 4 && a.ultimaHoraPago && b.ultimaHoraPago) {
+                return b.ultimaHoraPago - a.ultimaHoraPago;
+            }
+
+            // 3. Orden alfabético
+            return a.cliente.nombre.localeCompare(b.cliente.nombre);
+        });
+    }, [clientesAgrupados, cobradorActivo]);
+
+    let totalEsperado = 0;
+    let totalCobrado = 0;
+    clientesFiltrados.forEach(c => {
+        c.listaPrestamos.forEach(p => {
+            if (p.tieneCuotaProgramadaHoy) totalEsperado += Number(p.prestamoInfo.valor_cuota);
+            totalCobrado += p.montoIngresadoFisicamenteHoy;
+        });
+    });
 
     const descargarPDF = () => {
         const tituloSecundario = cobradorActivo === 'todos' ? 'Global' : cobradorActivo === 'ayudante' ? 'Ayudante' : 'Mis Cobros';
 
-        const datosParaPDF = pagosFiltrados.map(item => ({
-            prestamos: item.prestamo,
-            estado_cobro: item.estadoDisplay,
-            monto_recibido: item.montoIngresadoFisicamenteHoy || item.prestamo.valor_cuota
-        }));
+        const datosParaPDF = [];
+        clientesFiltrados.forEach(c => {
+            c.listaPrestamos.forEach(p => {
+                datosParaPDF.push({
+                    prestamos: p.prestamoInfo,
+                    estado_cobro: p.estadoDisplay,
+                    monto_recibido: p.montoIngresadoFisicamenteHoy || p.prestamoInfo.valor_cuota
+                });
+            });
+        });
+
         generarReporteRutaPDF(datosParaPDF, `${fecha} (DIARIO - ${tituloSecundario})`, totalEsperado, totalCobrado);
     };
 
-    const abrirCartulina = (itemAgrupado) => {
-        const pInfo = itemAgrupado.prestamo;
+    const abrirCartulina = (pInfo) => {
         const prestamoFormateado = {
             id: pInfo.id,
             monto_total: pInfo.monto_total,
@@ -146,9 +205,7 @@ export default function CalendarioCobros() {
         setPrestamoSeleccionado(prestamoFormateado);
     };
 
-    const renovarPrestamo = (clienteId, prestamoId) => {
-        navigate('/nuevo-prestamo', { state: { preselectClienteId: clienteId, prestamoARenovar: prestamoId } });
-    };
+    const renovarPrestamo = (clienteId, prestamoId) => navigate('/nuevo-prestamo', { state: { preselectClienteId: clienteId, prestamoARenovar: prestamoId } });
 
     const finalizarPrestamo = async () => {
         await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0, fecha_cierre: fecha }).eq('id', prestamoSeleccionado.id);
@@ -179,27 +236,15 @@ export default function CalendarioCobros() {
                     <div className="absolute top-0 left-0 w-1 h-full bg-amber-500"></div>
 
                     <div className="flex flex-col gap-3 mb-4">
-                        <select
-                            value={cobradorActivo}
-                            onChange={(e) => setCobradorActivo(e.target.value)}
-                            className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold text-sm focus:border-amber-500 transition"
-                        >
+                        <select value={cobradorActivo} onChange={(e) => setCobradorActivo(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold text-sm focus:border-amber-500 transition">
                             <option value="todos">Ver Ruta Completa (Yo + Ayudante)</option>
                             <option value="principal">Solo Mis Cobros</option>
                             <option value="ayudante">Solo Cobros del Ayudante</option>
                         </select>
 
                         <div className="flex gap-2">
-                            <input
-                                type="date"
-                                value={fecha}
-                                onChange={(e) => setFecha(e.target.value)}
-                                className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold focus:border-amber-500 transition"
-                            />
-                            <button
-                                onClick={descargarPDF}
-                                className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2"
-                            >
+                            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold focus:border-amber-500 transition" />
+                            <button onClick={descargarPDF} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2">
                                 <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                                 PDF
                             </button>
@@ -218,69 +263,74 @@ export default function CalendarioCobros() {
                     </div>
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-4">
                     {cargando ? (
                         <div className="flex justify-center py-8"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div></div>
-                    ) : pagosFiltrados.length === 0 ? (
+                    ) : clientesFiltrados.length === 0 ? (
                         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
                             <p className="text-gray-400 font-medium">No hay cobros diarios para esta fecha.</p>
                         </div>
                     ) : (
-                        pagosFiltrados.map((item) => (
-                            <div key={item.prestamo.id} className={`bg-white p-4 rounded-2xl shadow-sm border-l-4 transition-all hover:shadow-md ${item.estadoDisplay === 'pagado' ? 'border-l-green-500 opacity-75' :
-                                item.estadoDisplay === 'no_pago' ? 'border-l-red-500' :
-                                    item.estadoDisplay === 'al_dia' ? 'border-l-blue-400 opacity-80' :
-                                        'border-l-amber-400'
+                        clientesFiltrados.map((item) => (
+                            <div key={item.cliente.id} className={`bg-white p-4 rounded-2xl shadow-sm border-l-4 transition-all hover:shadow-md ${item.estadoGlobal === 'pagado' ? 'border-l-green-500 opacity-80' :
+                                item.estadoGlobal === 'no_pago' ? 'border-l-red-500' :
+                                    item.estadoGlobal === 'al_dia' ? 'border-l-blue-400 opacity-90' : 'border-l-amber-400'
                                 }`}>
-                                <div className="flex justify-between items-center">
+                                <div className="flex justify-between items-start mb-3">
                                     <div>
-                                        <h2 className="font-bold text-gray-800 text-lg">{item.prestamo.clientes.nombre}</h2>
-                                        <p className="text-xs font-bold text-gray-400 mb-2 flex items-center gap-1">
+                                        <h2 className="font-bold text-gray-800 text-lg leading-tight">{item.cliente.nombre}</h2>
+                                        <p className="text-[11px] font-bold text-gray-400 flex items-center gap-1 mt-1">
                                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
-                                            {item.prestamo.clientes.telefono || 'Sin número'}
+                                            {item.cliente.telefono || 'Sin número'}
                                         </p>
-                                        <div className="flex items-center gap-2">
-                                            <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md ${item.estadoDisplay === 'pagado' ? 'bg-green-50 text-green-600 border border-green-200' :
-                                                item.estadoDisplay === 'no_pago' ? 'bg-red-50 text-red-600 border border-red-200' :
-                                                    item.estadoDisplay === 'al_dia' ? 'bg-blue-50 text-blue-600 border border-blue-200' :
-                                                        'bg-amber-50 text-amber-600 border border-amber-200'
-                                                }`}>
-                                                {item.estadoDisplay === 'pagado' ? '✓ Cobrado' :
-                                                    item.estadoDisplay === 'no_pago' ? '✗ Atrasado' :
-                                                        item.estadoDisplay === 'al_dia' ? 'Al Día' :
-                                                            'Pendiente'}
-                                            </span>
-                                            {item.prestamo.cobrador === 'ayudante' && (
-                                                <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">
-                                                    Ayudante
-                                                </span>
-                                            )}
-                                        </div>
                                     </div>
+                                    <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-md ${item.estadoGlobal === 'pagado' ? 'bg-green-50 text-green-600 border border-green-200' :
+                                        item.estadoGlobal === 'no_pago' ? 'bg-red-50 text-red-600 border border-red-200' :
+                                            item.estadoGlobal === 'al_dia' ? 'bg-blue-50 text-blue-600 border border-blue-200' : 'bg-amber-50 text-amber-600 border border-amber-200'
+                                        }`}>
+                                        {item.estadoGlobal === 'pagado' ? '✓ Cobrado' : item.estadoGlobal === 'no_pago' ? '✗ Atrasado' : item.estadoGlobal === 'al_dia' ? 'Al Día' : 'Pendiente'}
+                                    </span>
+                                </div>
 
-                                    <div className="text-right flex flex-col items-end">
-                                        {item.estadoDisplay === 'pagado' ? (
-                                            <>
-                                                <p className="font-black text-green-600 text-2xl">
-                                                    ${item.montoIngresadoFisicamenteHoy > 0 ? item.montoIngresadoFisicamenteHoy.toFixed(2) : Number(item.prestamo.valor_cuota).toFixed(2)}
-                                                </p>
-                                                {item.cuotasPagadasHoy > 1 && (
-                                                    <p className="text-[9px] font-black text-green-700 bg-green-100 px-2 py-0.5 rounded-full mt-1 uppercase tracking-wider">
-                                                        {item.cuotasPagadasHoy} cuotas
-                                                    </p>
+                                <div className="space-y-2 border-t border-gray-100 pt-3">
+                                    {item.listaPrestamos.map(p => (
+                                        <div key={p.prestamoInfo.id} className="flex justify-between items-center bg-gray-50/70 p-2.5 rounded-lg border border-gray-100">
+                                            <div className="flex flex-col">
+                                                <span className="text-xs font-black text-gray-700">Crédito ${p.prestamoInfo.monto_total}</span>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                    <span className="text-[10px] font-bold text-gray-500">
+                                                        Cuota: ${p.prestamoInfo.valor_cuota}
+                                                    </span>
+                                                    {p.prestamoInfo.cobrador === 'ayudante' && (
+                                                        <span className="text-[8px] font-black uppercase bg-neutral-200 text-neutral-600 px-1.5 py-0.5 rounded">Ayud.</span>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-3">
+                                                {p.estadoDisplay === 'pagado' && (
+                                                    <div className="text-right flex flex-col items-end">
+                                                        <span className="font-black text-green-600 text-sm">
+                                                            ${p.montoIngresadoFisicamenteHoy > 0 ? p.montoIngresadoFisicamenteHoy.toFixed(2) : Number(p.prestamoInfo.valor_cuota).toFixed(2)}
+                                                        </span>
+                                                        {p.horaFormateada && (
+                                                            <span className="text-[8px] font-bold text-gray-400 mt-0.5 flex items-center gap-0.5">
+                                                                <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                                                {p.horaFormateada}
+                                                            </span>
+                                                        )}
+                                                        {p.cuotasPagadasHoy > 1 && <span className="block text-[8px] font-black text-green-700 uppercase mt-0.5">{p.cuotasPagadasHoy} cuotas</span>}
+                                                    </div>
                                                 )}
-                                            </>
-                                        ) : (
-                                            <p className="font-black text-gray-800 text-2xl">${item.prestamo.valor_cuota}</p>
-                                        )}
-
-                                        <button
-                                            onClick={() => abrirCartulina(item)}
-                                            className="mt-2 bg-amber-50 text-amber-700 hover:bg-amber-100 font-black tracking-widest uppercase text-[9px] px-4 py-2 rounded-lg transition-colors border border-amber-200 shadow-sm"
-                                        >
-                                            Cartulina
-                                        </button>
-                                    </div>
+                                                <button
+                                                    onClick={() => abrirCartulina(p.prestamoInfo)}
+                                                    className="bg-white text-amber-700 hover:bg-amber-50 font-black tracking-widest uppercase text-[9px] px-3 py-1.5 rounded transition-colors border border-amber-200 shadow-sm"
+                                                >
+                                                    Abrir
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
                         ))
@@ -290,7 +340,7 @@ export default function CalendarioCobros() {
 
             {prestamoSeleccionado && (
                 prestamoSeleccionado.tipo_prestamo === 'mensual_interes' ? (
-                    <LibretaMensualModal
+                    <LibretaInteresAbiertoModal
                         prestamo={prestamoSeleccionado}
                         onClose={() => setPrestamoSeleccionado(null)}
                         onFinalizar={finalizarPrestamo}

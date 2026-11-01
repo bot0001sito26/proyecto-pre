@@ -3,7 +3,7 @@ import supabase from '../../supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import CartulinaModal from '../../components/CartulinaModal';
-import LibretaMensualModal from '../../components/LibretaMensualModal';
+import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
 import ClienteAcordeon from '../../components/ClienteAcordeon';
 import { generarReporteCarteraPDF } from '../../utils/generarPDF';
 
@@ -182,7 +182,6 @@ export default function ListaPrestamos() {
                             Filtro de Rendimiento
                         </h2>
 
-                        {/* BOTÓN DEL OJITO */}
                         <button
                             onClick={() => setMostrarValores(!mostrarValores)}
                             className="bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-xl transition"
@@ -266,7 +265,7 @@ export default function ListaPrestamos() {
 
             {prestamoSeleccionado && (
                 prestamoSeleccionado.tipo_prestamo === 'mensual_interes' ? (
-                    <LibretaMensualModal
+                    <LibretaInteresAbiertoModal
                         prestamo={prestamoSeleccionado}
                         onClose={() => setPrestamoSeleccionado(null)}
                         onFinalizar={finalizarPrestamo}
