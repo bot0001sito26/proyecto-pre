@@ -45,10 +45,16 @@ export default function CobrosPeriodicos() {
             .eq('estado', 'activo');
 
         // Lógica para filtrar los prestamos especiales (por dias)
-        if (modalidadActiva === 'especial') {
-            query = query.like('frecuencia', 'dias_%');
-        } else {
-            query = query.eq('frecuencia', modalidadActiva);
+        // Lógica para mapear las pestañas con los valores reales de la base de datos
+        if (modalidadActiva === 'semanal') {
+            query = query.eq('frecuencia', 'dias_7');
+        } else if (modalidadActiva === 'quincenal') {
+            query = query.eq('frecuencia', 'dias_15');
+        } else if (modalidadActiva === 'mensual') {
+            query = query.eq('frecuencia', 'mensual');
+        } else if (modalidadActiva === 'especial') {
+            // Filtramos todo lo que sea dias_, pero excluimos expresamente el 7 y el 15
+            query = query.like('frecuencia', 'dias_%').neq('frecuencia', 'dias_7').neq('frecuencia', 'dias_15');
         }
 
         const { data, error } = await query;

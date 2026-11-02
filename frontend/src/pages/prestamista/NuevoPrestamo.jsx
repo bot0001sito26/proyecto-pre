@@ -34,23 +34,17 @@ export default function NuevoPrestamo() {
         }
     }, [user]);
 
+    // Lógica estricta de modalidades
     useEffect(() => {
         if (tipoPrestamo === 'mensual_interes') {
-            setFrecuencia('mensual');
+            setFrecuencia('semanal'); // Por defecto al cambiar a abierto
             setInteres('0');
         } else {
-            setFrecuencia('diario');
+            setFrecuencia('diario'); // Única opción para cuota fija
             setNumeroCuotas(30);
             setInteres('');
         }
     }, [tipoPrestamo]);
-
-    const handleFrecuenciaChange = (f) => {
-        setFrecuencia(f);
-        if (f === 'diario') setNumeroCuotas(30);
-        else if (f === 'semanal') setNumeroCuotas(4);
-        else if (f === 'quincenal') setNumeroCuotas(2);
-    };
 
     const sumarDias = (fechaBaseStr, dias) => {
         const [a, m, d] = fechaBaseStr.split('-').map(Number);
@@ -74,17 +68,22 @@ export default function NuevoPrestamo() {
         const montoTotal = capital + interesTotal;
         let valorCuota = 0;
         let cuotasFinales = 1;
-        let frecAGuardar = frecuencia; // Lo que irá a la BD
+        let frecAGuardar = frecuencia;
 
         if (tipoPrestamo === 'cuota_fija') {
             cuotasFinales = parseInt(numeroCuotas);
             valorCuota = (montoTotal / cuotasFinales).toFixed(2);
         } else {
             valorCuota = (capital * 0.20).toFixed(2);
-            // Si eligió modalidad por días en interés abierto, lo guardamos como "dias_40"
             if (frecuencia === 'dias') {
                 const diasInt = parseInt(diasPersonalizados) || 30;
                 frecAGuardar = `dias_${diasInt}`;
+            } else if (frecuencia === 'semanal') {
+                frecAGuardar = 'dias_7';
+            } else if (frecuencia === 'quincenal') {
+                frecAGuardar = 'dias_15';
+            } else {
+                frecAGuardar = 'mensual';
             }
         }
 
@@ -101,20 +100,16 @@ export default function NuevoPrestamo() {
                 valor_cuota: valorCuota,
                 fecha_inicio: fechaInicio,
                 cobrador,
-                tipo_prestamo: tipoPrestamo // Seguirá siendo 'mensual_interes' en la BD
+                tipo_prestamo: tipoPrestamo
             }]).select().single();
 
         if (!errorPrestamo && prestamo) {
             const pagosGenerados = [];
 
             if (tipoPrestamo === 'cuota_fija') {
-                let diasASumar = 1;
-                if (frecuencia === 'semanal') diasASumar = 7;
-                else if (frecuencia === 'quincenal') diasASumar = 15;
-
                 let fechaIterativa = fechaInicio;
                 for (let i = 1; i <= cuotasFinales; i++) {
-                    fechaIterativa = sumarDias(fechaIterativa, diasASumar);
+                    fechaIterativa = sumarDias(fechaIterativa, 1); // Siempre 1 día para diario
                     pagosGenerados.push({
                         prestamo_id: prestamo.id,
                         fecha_cobro: fechaIterativa,
@@ -123,12 +118,15 @@ export default function NuevoPrestamo() {
                     });
                 }
             } else {
-                // MODELO INTERÉS ABIERTO (Mensual o por Días)
                 let fechaCobroStr = '';
 
                 if (frecuencia === 'dias') {
                     const diasInt = parseInt(diasPersonalizados) || 30;
                     fechaCobroStr = sumarDias(fechaInicio, diasInt);
+                } else if (frecuencia === 'semanal') {
+                    fechaCobroStr = sumarDias(fechaInicio, 7);
+                } else if (frecuencia === 'quincenal') {
+                    fechaCobroStr = sumarDias(fechaInicio, 15);
                 } else {
                     const [a, m, d] = fechaInicio.split('-').map(Number);
                     let fechaCobroCorte = new Date(a, m - 1, d, 12, 0, 0);
@@ -146,7 +144,7 @@ export default function NuevoPrestamo() {
                 await supabase.from('movimientos_mensuales').insert([{
                     prestamo_id: prestamo.id,
                     fecha: fechaInicio,
-                    tipo: 'corte_mes', // Lo mantenemos así para retrocompatibilidad
+                    tipo: 'corte_mes',
                     monto: capital,
                     notas: `Inicio del préstamo. Vencimiento del primer corte: ${fechaCobroStr}`
                 }]);
@@ -172,16 +170,23 @@ export default function NuevoPrestamo() {
 
     const calcularSiguienteCorte = () => {
         if (!fechaInicio) return '';
-        if (tipoPrestamo === 'mensual_interes' && frecuencia === 'dias') {
-            const d = parseInt(diasPersonalizados) || 0;
-            if (d === 0) return '...';
-            return sumarDias(fechaInicio, d);
+        if (tipoPrestamo === 'mensual_interes') {
+            if (frecuencia === 'dias') {
+                const d = parseInt(diasPersonalizados) || 0;
+                if (d === 0) return '...';
+                return sumarDias(fechaInicio, d);
+            } else if (frecuencia === 'semanal') {
+                return sumarDias(fechaInicio, 7);
+            } else if (frecuencia === 'quincenal') {
+                return sumarDias(fechaInicio, 15);
+            }
+            // Mensual clásico
+            const [a, m, d] = fechaInicio.split('-').map(Number);
+            const prox = new Date(a, m - 1, d, 12, 0, 0);
+            prox.setMonth(prox.getMonth() + 1);
+            return prox.toISOString().split('T')[0];
         }
-        // Mensual clásico
-        const [a, m, d] = fechaInicio.split('-').map(Number);
-        const prox = new Date(a, m - 1, d, 12, 0, 0);
-        prox.setMonth(prox.getMonth() + 1);
-        return prox.toISOString().split('T')[0];
+        return '';
     };
 
     return (
@@ -205,12 +210,12 @@ export default function NuevoPrestamo() {
                                 <label className={`border p-3 rounded-xl text-center text-xs font-black uppercase tracking-wider cursor-pointer transition flex flex-col items-center justify-center gap-1 ${tipoPrestamo === 'cuota_fija' ? 'bg-amber-100 border-amber-400 text-amber-800 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
                                     <input type="radio" name="tipoPrestamo" value="cuota_fija" checked={tipoPrestamo === 'cuota_fija'} onChange={() => setTipoPrestamo('cuota_fija')} className="hidden" />
                                     Cuota Fija
-                                    <span className="text-[8px] font-medium normal-case tracking-normal">Diario / Semanal / Quinc.</span>
+                                    <span className="text-[8px] font-medium normal-case tracking-normal">Sólo Diario (Rigido)</span>
                                 </label>
                                 <label className={`border p-3 rounded-xl text-center text-xs font-black uppercase tracking-wider cursor-pointer transition flex flex-col items-center justify-center gap-1 ${tipoPrestamo === 'mensual_interes' ? 'bg-amber-100 border-amber-400 text-amber-800 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
                                     <input type="radio" name="tipoPrestamo" value="mensual_interes" checked={tipoPrestamo === 'mensual_interes'} onChange={() => setTipoPrestamo('mensual_interes')} className="hidden" />
                                     Interés Abierto
-                                    <span className="text-[8px] font-medium normal-case tracking-normal">Mes a mes / Personalizado</span>
+                                    <span className="text-[8px] font-medium normal-case tracking-normal">Capital flexible</span>
                                 </label>
                             </div>
                         </div>
@@ -241,36 +246,36 @@ export default function NuevoPrestamo() {
                             )}
                         </div>
 
-                        {/* CONFIGURACIÓN DE FRECUENCIA */}
+                        {/* CONFIGURACIÓN DE FRECUENCIA ESTRICTA */}
                         <div className="bg-gray-50/50 border border-gray-100 p-3 rounded-xl space-y-3">
                             <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Frecuencia de Cobro</label>
 
                             {tipoPrestamo === 'cuota_fija' ? (
                                 <>
-                                    <div className="grid grid-cols-3 gap-2">
-                                        {['diario', 'semanal', 'quincenal'].map(f => (
-                                            <label key={f} className={`border p-2.5 rounded-xl text-center text-[11px] font-black uppercase tracking-wider cursor-pointer transition ${frecuencia === f ? 'bg-amber-50 border-amber-400 text-amber-700 shadow-sm' : 'bg-white border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                                                <input type="radio" name="frecuencia" value={f} checked={frecuencia === f} onChange={() => handleFrecuenciaChange(f)} className="hidden" />
-                                                {f}
-                                            </label>
-                                        ))}
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <label className="border p-2.5 rounded-xl text-center text-[11px] font-black uppercase tracking-wider bg-amber-50 border-amber-400 text-amber-700 shadow-sm cursor-not-allowed">
+                                            DIARIO (Única opción)
+                                        </label>
                                     </div>
                                     <div className="pt-2 border-t border-gray-200">
                                         <label className="block text-[10px] font-black uppercase tracking-widest text-amber-600 mb-1">Nº de Cuotas (Cantidad de Pagos)</label>
-                                        <input type="number" min="1" value={numeroCuotas} onChange={(e) => setNumeroCuotas(e.target.value)} className="w-full border border-amber-200 rounded-xl p-2.5 bg-white outline-none focus:border-amber-500 font-black text-amber-900 transition text-center shadow-inner" required />
+                                        <input
+                                            type="number"
+                                            value={numeroCuotas}
+                                            readOnly
+                                            className="w-full border border-gray-200 rounded-xl p-2.5 bg-gray-100 font-black text-gray-500 text-center shadow-inner cursor-not-allowed outline-none select-none"
+                                        />
                                     </div>
                                 </>
                             ) : (
                                 <>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <label className={`border p-2.5 rounded-xl text-center text-[11px] font-black uppercase tracking-wider cursor-pointer transition ${frecuencia === 'mensual' ? 'bg-amber-50 border-amber-400 text-amber-700 shadow-sm' : 'bg-white border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                                            <input type="radio" name="frecuencia" value="mensual" checked={frecuencia === 'mensual'} onChange={() => handleFrecuenciaChange('mensual')} className="hidden" />
-                                            Mensual (Mes a mes)
-                                        </label>
-                                        <label className={`border p-2.5 rounded-xl text-center text-[11px] font-black uppercase tracking-wider cursor-pointer transition ${frecuencia === 'dias' ? 'bg-amber-50 border-amber-400 text-amber-700 shadow-sm' : 'bg-white border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                                            <input type="radio" name="frecuencia" value="dias" checked={frecuencia === 'dias'} onChange={() => handleFrecuenciaChange('dias')} className="hidden" />
-                                            Especial (Por Días)
-                                        </label>
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                                        {['semanal', 'quincenal', 'mensual', 'dias'].map(f => (
+                                            <label key={f} className={`border p-2.5 rounded-xl text-center text-[11px] font-black uppercase tracking-wider cursor-pointer transition ${frecuencia === f ? 'bg-amber-50 border-amber-400 text-amber-700 shadow-sm' : 'bg-white border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
+                                                <input type="radio" name="frecuencia" value={f} checked={frecuencia === f} onChange={() => setFrecuencia(f)} className="hidden" />
+                                                {f === 'mensual' ? 'Mes a mes' : f === 'dias' ? 'Especial' : f}
+                                            </label>
+                                        ))}
                                     </div>
                                     {frecuencia === 'dias' && (
                                         <div className="pt-2 border-t border-gray-200 animate-fade-in">

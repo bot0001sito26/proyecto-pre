@@ -18,8 +18,12 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     const [nuevoInteres, setNuevoInteres] = useState('');
 
     const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
-    const [editandoFecha, setEditandoFecha] = useState(false);
+
+    // Edición de Parámetros
+    const [editandoParametros, setEditandoParametros] = useState(false);
     const [nuevaFecha, setNuevaFecha] = useState('');
+    const [nuevaFrecuencia, setNuevaFrecuencia] = useState('');
+    const [nuevosDiasEspeciales, setNuevosDiasEspeciales] = useState('');
 
     const hoyStr = useMemo(() => {
         const d = new Date();
@@ -27,11 +31,21 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         return new Date(d.getTime() - offset).toISOString().split('T')[0];
     }, []);
 
-    const { id: prestamoId, fecha_inicio: fechaInicio, monto_total: montoTotal, monto_capital: montoCapital, cobrador, clientes, frecuencia, estado } = prestamo || {};
+    const { id: prestamoId, fecha_inicio: fechaInicio, monto_total: montoTotal, monto_capital: montoCapital, cobrador, clientes, frecuencia, estado, prestamista_id } = prestamo || {};
     const [cobradorLocal, setCobradorLocal] = useState(cobrador || 'principal');
 
-    const isEspecial = frecuencia?.startsWith('dias_');
-    const diasEspeciales = isEspecial ? parseInt(frecuencia.split('_')[1]) : 30;
+    // LÓGICAS DE FRECUENCIA
+    const isFrecuenciaPorDias = frecuencia?.startsWith('dias_');
+    const diasFrecuencia = isFrecuenciaPorDias ? parseInt(frecuencia.split('_')[1]) : 30;
+    const isPersonalizado = isFrecuenciaPorDias && frecuencia !== 'dias_7' && frecuencia !== 'dias_15';
+
+    // FRACCIONAMIENTO DEL INTERÉS MENSUAL
+    const cortesPorMes = useMemo(() => {
+        if (frecuencia === 'dias_7') return 4;
+        if (frecuencia === 'dias_15') return 2;
+        if (isFrecuenciaPorDias) return 30 / (diasFrecuencia || 30);
+        return 1;
+    }, [frecuencia, isFrecuenciaPorDias, diasFrecuencia]);
 
     const sumarDias = (fechaBaseStr, dias) => {
         const [a, m, d] = fechaBaseStr.split('-').map(Number);
@@ -44,11 +58,20 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         if (prestamoId) {
             setCobradorLocal(cobrador || 'principal');
             setNuevaFecha(fechaInicio || '');
+
+            if (frecuencia === 'mensual') setNuevaFrecuencia('mensual');
+            else if (frecuencia === 'dias_7') setNuevaFrecuencia('dias_7');
+            else if (frecuencia === 'dias_15') setNuevaFrecuencia('dias_15');
+            else if (isPersonalizado) {
+                setNuevaFrecuencia('dias_especial');
+                setNuevosDiasEspeciales(diasFrecuencia.toString());
+            }
+
             setModoLiquidacion(false);
             setMostrarNegociar(false);
             fetchMovimientos();
         }
-    }, [prestamoId]);
+    }, [prestamoId, frecuencia, fechaInicio, isPersonalizado, diasFrecuencia, cobrador]);
 
     const fetchMovimientos = async () => {
         setCargando(true);
@@ -57,25 +80,30 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         setCargando(false);
     };
 
-    // EL CORAZÓN MATEMÁTICO UNIFICADO
     const calculos = useMemo(() => {
-        if (!fechaInicio) return { cortes: 0, generado: 0, pagado: 0, ajustes: 0, pendiente: 0, proximoCorte: '' };
+        if (!fechaInicio) return { cortes: 0, generado: 0, pagado: 0, ajustes: 0, pendiente: 0, proximoCorte: '', cronograma: [] };
 
+        // CÁLCULO LINEAL Y DIRECTO BASADO EN EL CAPITAL ORIGINAL
         const capitalOriginal = parseFloat(montoTotal);
+        const interesPorCorteFijo = (capitalOriginal * 0.20) / cortesPorMes;
+
         let generado = 0;
         let cortesTranscurridos = 0;
         let proximoCorteStr = '';
+        let cronograma = [];
 
-        if (isEspecial) {
-            let fechaCorteEfectiva = sumarDias(fechaInicio, diasEspeciales);
+        if (isFrecuenciaPorDias) {
+            let fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia);
             while (fechaCorteEfectiva <= hoyStr) {
-                const abonos = movimientos.filter(m => m.tipo === 'abono_capital' && m.fecha <= fechaCorteEfectiva).reduce((sum, m) => sum + parseFloat(m.monto), 0);
-                generado += (Math.max(0, capitalOriginal - abonos) * 0.20);
+                generado += interesPorCorteFijo; // Suma directa, sin restar abonos
                 cortesTranscurridos++;
-                fechaCorteEfectiva = sumarDias(fechaInicio, diasEspeciales * (cortesTranscurridos + 1));
+                cronograma.push({ numero: cortesTranscurridos, fecha: fechaCorteEfectiva, estado: 'pasado' });
+                fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia * (cortesTranscurridos + 1));
             }
             proximoCorteStr = fechaCorteEfectiva;
+            cronograma.push({ numero: cortesTranscurridos + 1, fecha: proximoCorteStr, estado: 'proximo' });
         } else {
+            // Mensual puro
             const [anioIni, mesIni, diaIni] = fechaInicio.split('-').map(Number);
             const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
             let mesCorte = mesIni + 1;
@@ -86,13 +114,11 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                 const ultimoDia = new Date(anioCorte, mesCorte, 0).getDate();
                 const diaCorteEfectivo = Math.min(diaIni, ultimoDia);
                 const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaCorteEfectivo);
+                const fechaArmada = `${fechaCorteFija.getFullYear()}-${String(fechaCorteFija.getMonth() + 1).padStart(2, '0')}-${String(fechaCorteFija.getDate()).padStart(2, '0')}`;
 
-                const abonos = movimientos.filter(m => m.tipo === 'abono_capital').reduce((sum, m) => {
-                    const [mA, mM, mD] = m.fecha.split('-').map(Number);
-                    return new Date(mA, mM - 1, mD) <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
-                }, 0);
+                generado += interesPorCorteFijo; // Suma directa, sin restar abonos
+                cronograma.push({ numero: cortesTranscurridos, fecha: fechaArmada, estado: 'pasado' });
 
-                generado += (Math.max(0, capitalOriginal - abonos) * 0.20);
                 mesCorte++;
                 if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
             }
@@ -101,16 +127,20 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
             const diaCorteProxEfectivo = Math.min(diaIni, ultimoDiaProxMes);
             const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaCorteProxEfectivo);
             proximoCorteStr = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
+
+            cronograma.push({ numero: cortesTranscurridos + 1, fecha: proximoCorteStr, estado: 'proximo' });
         }
 
         const pagado = movimientos.filter(m => m.tipo === 'pago_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
         const ajustes = movimientos.filter(m => m.tipo === 'ajuste_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
         const pendiente = generado - pagado - ajustes;
 
-        return { cortes: cortesTranscurridos, generado, pagado, ajustes, pendiente: Math.max(0, pendiente), proximoCorte: proximoCorteStr };
-    }, [movimientos, fechaInicio, montoTotal, hoyStr, isEspecial, diasEspeciales]);
+        return { cortes: cortesTranscurridos, generado, pagado, ajustes, pendiente: Math.max(0, pendiente), proximoCorte: proximoCorteStr, cronograma };
+    }, [fechaInicio, montoTotal, hoyStr, isFrecuenciaPorDias, diasFrecuencia, cortesPorMes, movimientos]);
 
-    const interesSugerido = useMemo(() => (parseFloat(montoCapital || 0) * 0.20).toFixed(2), [montoCapital]);
+    // UI Helpers ahora amarrados al montoTotal (original) para mantener concordancia
+    const interesSugeridoMensual = useMemo(() => (parseFloat(montoTotal || 0) * 0.20).toFixed(2), [montoTotal]);
+    const interesPorCorteSugerido = useMemo(() => (parseFloat(montoTotal || 0) * 0.20 / cortesPorMes).toFixed(2), [montoTotal, cortesPorMes]);
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
         setCobradorLocal(nuevoCobrador);
@@ -119,11 +149,103 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         else setCobradorLocal(cobrador || 'principal');
     };
 
-    const ejecutarCambioFecha = async () => {
+    const ejecutarRefinanciamiento = async (frecFinal) => {
         setModalConf({ isOpen: false, accion: null });
-        const { error } = await supabase.from('prestamos').update({ fecha_inicio: nuevaFecha }).eq('id', prestamoId);
-        if (!error) { setEditandoFecha(false); if (onUpdate) onUpdate(); }
-        else alert("Error al cambiar fecha.");
+        setCargando(true);
+
+        const capActual = parseFloat(montoCapital);
+        if (capActual <= 0) {
+            alert("No se puede refinanciar un crédito sin capital pendiente.");
+            setCargando(false);
+            return;
+        }
+
+        await supabase.from('prestamos').update({ estado: 'renovado', fecha_cierre: hoyStr }).eq('id', prestamoId);
+        const valorCuotaNuevo = (capActual * 0.20).toFixed(2);
+
+        const { data: nuevoPrestamo, error } = await supabase.from('prestamos').insert([{
+            prestamista_id: prestamista_id,
+            cliente_id: clientes.id,
+            monto_capital: capActual,
+            interes_total: 0,
+            monto_total: capActual,
+            saldo_pendiente: capActual,
+            frecuencia: frecFinal,
+            valor_cuota: valorCuotaNuevo,
+            fecha_inicio: nuevaFecha,
+            cobrador: cobradorLocal,
+            tipo_prestamo: 'mensual_interes'
+        }]).select().single();
+
+        if (!error && nuevoPrestamo) {
+            let fechaCobroStr = '';
+            if (frecFinal === 'mensual') {
+                const [a, m, d] = nuevaFecha.split('-').map(Number);
+                let prox = new Date(a, m - 1, d, 12, 0, 0);
+                prox.setMonth(prox.getMonth() + 1);
+                fechaCobroStr = prox.toISOString().split('T')[0];
+            } else {
+                const dExtra = parseInt(frecFinal.split('_')[1]) || 30;
+                fechaCobroStr = sumarDias(nuevaFecha, dExtra);
+            }
+
+            await supabase.from('historial_pagos').insert([{
+                prestamo_id: nuevoPrestamo.id,
+                fecha_cobro: fechaCobroStr,
+                estado_cobro: 'pendiente',
+                monto_recibido: 0
+            }]);
+
+            await supabase.from('movimientos_mensuales').insert([{
+                prestamo_id: nuevoPrestamo.id,
+                fecha: nuevaFecha,
+                tipo: 'corte_mes',
+                monto: capActual,
+                notas: `Refinanciamiento por cambio de frecuencia. Anterior: ${obtenerTextoFrecuenciaActual()}`
+            }]);
+
+            setEditandoParametros(false);
+            onClose();
+            if (onUpdate) onUpdate();
+        } else {
+            alert("Error al refinanciar: " + error.message);
+            setCargando(false);
+        }
+    };
+
+    const ejecutarCambioParametros = async () => {
+        let frecFinal = nuevaFrecuencia;
+        if (nuevaFrecuencia === 'dias_especial') {
+            const diasInt = parseInt(nuevosDiasEspeciales) || 30;
+            frecFinal = `dias_${diasInt}`;
+        }
+
+        const cambioFrecuenciaReal = (frecuencia !== frecFinal);
+
+        if (cambioFrecuenciaReal) {
+            if (calculos.pendiente > 0) {
+                alert("Para cambiar la frecuencia, primero debes cobrar o negociar el interés pendiente ($" + calculos.pendiente.toFixed(2) + ").");
+                return;
+            }
+            setModalConf({
+                isOpen: true,
+                titulo: 'Refinanciar Crédito',
+                mensaje: `Se cerrará este préstamo y se abrirá uno nuevo ${frecFinal.replace('dias_', 'Quincenal/Semanal ')} a partir del ${nuevaFecha}. ¿Continuar?`,
+                accion: () => ejecutarRefinanciamiento(frecFinal)
+            });
+        } else {
+            setModalConf({
+                isOpen: true,
+                titulo: 'Corregir Fecha',
+                mensaje: 'Se actualizará la fecha de inicio. Úsalo solo si te equivocaste al crear el préstamo.',
+                accion: async () => {
+                    setModalConf({ isOpen: false, accion: null });
+                    const { error } = await supabase.from('prestamos').update({ fecha_inicio: nuevaFecha }).eq('id', prestamoId);
+                    if (!error) { setEditandoParametros(false); if (onUpdate) onUpdate(); }
+                    else alert("Error al corregir fecha.");
+                }
+            });
+        }
     };
 
     const ejecutarGuardado = async (monto) => {
@@ -183,7 +305,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         }
 
         if (movs.length > 0) await supabase.from('movimientos_mensuales').insert(movs);
-        await supabase.from('prestamos').update({ monto_capital: 0 }).eq('id', prestamoId);
+        await supabase.from('prestamos').update({ monto_capital: 0, estado: 'cerrado' }).eq('id', prestamoId);
         setModoLiquidacion(false);
         if (onFinalizar) onFinalizar();
     };
@@ -198,15 +320,22 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         }
     };
 
+    const obtenerTextoFrecuenciaActual = () => {
+        if (frecuencia === 'mensual') return 'Mensual (Mes a Mes)';
+        if (frecuencia === 'dias_7') return 'Semanal (7 Días)';
+        if (frecuencia === 'dias_15') return 'Quincenal (15 Días)';
+        if (isPersonalizado) return `Especial (${diasFrecuencia} Días)`;
+        return frecuencia;
+    };
+
     return (
         <>
             <div className="fixed inset-0 bg-neutral-950/70 flex items-end md:items-center justify-center p-0 md:p-4 z-50 backdrop-blur-sm transition-opacity">
                 <div className="bg-white w-full max-w-lg rounded-t-2xl md:rounded-2xl h-[90vh] md:h-auto max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-                    {/* CABECERA DINÁMICA */}
-                    <div className={`p-4 text-white flex justify-between items-center ${isEspecial ? 'bg-emerald-900 border-b border-emerald-500/30' : 'bg-neutral-900 border-b border-amber-500/30'}`}>
-                        <span className={`text-xs font-black uppercase tracking-widest flex items-center gap-2 ${isEspecial ? 'text-emerald-400' : 'text-amber-500'}`}>
+                    <div className={`p-4 text-white flex justify-between items-center ${isPersonalizado ? 'bg-emerald-900 border-b border-emerald-500/30' : 'bg-neutral-900 border-b border-amber-500/30'}`}>
+                        <span className={`text-xs font-black uppercase tracking-widest flex items-center gap-2 ${isPersonalizado ? 'text-emerald-400' : 'text-amber-500'}`}>
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
-                            Libreta {isEspecial ? `Especial (${diasEspeciales} Días)` : 'Mensual Anubis'}
+                            Libreta Abierta
                         </span>
                         <button onClick={onClose} className="text-neutral-400 hover:text-white transition p-1">
                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -215,36 +344,77 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
                     <div className="p-4 md:p-6 overflow-y-auto flex-1 bg-amber-50/20 select-none space-y-4">
                         <div className="border-2 border-neutral-900 bg-white shadow-sm p-4 font-mono relative">
-                            <div className={`absolute top-0 left-0 w-full h-1 ${isEspecial ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
+                            <div className={`absolute top-0 left-0 w-full h-1 ${isPersonalizado ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
 
                             <div className="mb-4 text-sm font-bold leading-relaxed text-neutral-700">
-                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
-                                    <span className="w-24 text-neutral-400">Cliente:</span>
-                                    <span className="truncate">{clientes?.nombre}</span>
-                                </div>
-                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 items-center min-h-[28px]">
-                                    <span className="w-24 text-neutral-400">Inicio:</span>
-                                    {editandoFecha ? (
-                                        <div className="flex items-center gap-2 flex-1 animate-fade-in">
-                                            <input type="date" value={nuevaFecha} onChange={(e) => setNuevaFecha(e.target.value)} className="flex-1 text-xs font-black bg-white border border-amber-300 rounded p-1 outline-none" />
-                                            <button onClick={() => setModalConf({ isOpen: true, titulo: 'Cambiar Fecha', mensaje: '¿Modificar fecha de inicio y recalcular?', accion: ejecutarCambioFecha })} className="text-white bg-green-500 hover:bg-green-600 rounded p-1.5 shadow-sm">✓</button>
-                                            <button onClick={() => { setEditandoFecha(false); setNuevaFecha(fechaInicio); }} className="text-white bg-red-500 hover:bg-red-600 rounded p-1.5 shadow-sm">✕</button>
-                                        </div>
-                                    ) : (
-                                        <div className="flex items-center gap-3">
-                                            <span>{fechaInicio}</span>
-                                            <button onClick={() => setEditandoFecha(true)} className="text-[9px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-black uppercase hover:bg-amber-200 border border-amber-200">✏️ Editar</button>
-                                        </div>
+                                <div className="flex justify-between items-center border-b border-neutral-200 border-dashed pb-1 mb-2">
+                                    <div className="flex items-center">
+                                        <span className="w-24 text-neutral-400">Cliente:</span>
+                                        <span className="truncate">{clientes?.nombre}</span>
+                                    </div>
+                                    {!editandoParametros && (
+                                        <button onClick={() => setEditandoParametros(true)} className="text-[9px] bg-amber-100 text-amber-700 px-2 py-1 rounded font-black uppercase hover:bg-amber-200 border border-amber-200 flex items-center gap-1">
+                                            ⚙️ Ajustes
+                                        </button>
                                     )}
                                 </div>
-                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
+
+                                {editandoParametros ? (
+                                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3 space-y-3 animate-fade-in">
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-[10px] font-black uppercase text-amber-800">Fecha de Inicio / Refinanciamiento:</label>
+                                            <input type="date" value={nuevaFecha} onChange={(e) => setNuevaFecha(e.target.value)} className="w-full text-xs font-black bg-white border border-amber-300 rounded p-2 outline-none focus:border-amber-500" />
+                                        </div>
+
+                                        <div className="flex flex-col gap-1 pt-2 border-t border-amber-200/50">
+                                            <label className="text-[10px] font-black uppercase text-amber-800">Cambiar Frecuencia (Refinanciar):</label>
+                                            <select value={nuevaFrecuencia} onChange={(e) => setNuevaFrecuencia(e.target.value)} className="w-full text-xs font-black bg-white border border-amber-300 rounded p-2 outline-none focus:border-amber-500">
+                                                <option value="dias_7">Semanal (7 Días)</option>
+                                                <option value="dias_15">Quincenal (15 Días)</option>
+                                                <option value="mensual">Mensual (Mes a Mes)</option>
+                                                <option value="dias_especial">Personalizado (Por Días)</option>
+                                            </select>
+                                        </div>
+
+                                        {nuevaFrecuencia === 'dias_especial' && (
+                                            <div className="flex flex-col gap-1 animate-fade-in">
+                                                <label className="text-[10px] font-black uppercase text-amber-800">¿Cada cuántos días?</label>
+                                                <input type="number" min="1" value={nuevosDiasEspeciales} onChange={(e) => setNuevosDiasEspeciales(e.target.value)} placeholder="Ej: 40" className="w-full text-xs font-black bg-white border border-amber-300 rounded p-2 outline-none focus:border-amber-500" />
+                                            </div>
+                                        )}
+
+                                        <div className="flex gap-2 pt-2 border-t border-amber-200/50">
+                                            <button onClick={() => setEditandoParametros(false)} className="flex-1 bg-white border border-gray-300 text-gray-600 font-black py-2 rounded text-[10px] uppercase tracking-wider hover:bg-gray-50">Cancelar</button>
+                                            <button onClick={ejecutarCambioParametros} className="flex-1 bg-amber-500 text-white font-black py-2 rounded text-[10px] uppercase tracking-wider hover:bg-amber-600 shadow-sm">Aplicar</button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
+                                            <span className="w-24 text-neutral-400">Inicio:</span>
+                                            <span>{fechaInicio}</span>
+                                        </div>
+                                        <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
+                                            <span className="w-24 text-neutral-400">Frecuencia:</span>
+                                            <span className="font-black text-amber-600">{obtenerTextoFrecuenciaActual()}</span>
+                                        </div>
+                                    </>
+                                )}
+
+                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 mt-2">
                                     <span className="w-24 text-neutral-400">Capital Actual:</span>
                                     <span className="text-neutral-900 text-base font-black">${montoCapital}</span>
                                 </div>
-                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 text-amber-700 font-black">
-                                    <span className="w-24 text-neutral-400">Interés (20%):</span>
-                                    <span>${interesSugerido}</span>
+                                <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 text-amber-700">
+                                    <span className="w-24 text-neutral-400 font-bold">Int. Mensual (20%):</span>
+                                    <span className="font-black">${interesSugeridoMensual}</span>
                                 </div>
+                                {cortesPorMes > 1 && (
+                                    <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 text-amber-600">
+                                        <span className="w-24 text-neutral-400 font-bold">Int. por Corte:</span>
+                                        <span className="font-black">${interesPorCorteSugerido}</span>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="grid grid-cols-2 gap-2 mb-3">
@@ -257,6 +427,23 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                     <span className="text-xs font-black text-gray-800">{cargando ? '...' : calculos.proximoCorte}</span>
                                 </div>
                             </div>
+
+                            {calculos.cronograma && calculos.cronograma.length > 0 && (
+                                <div className="mb-4 bg-white border border-gray-200 rounded-lg p-2 max-h-32 overflow-y-auto shadow-inner">
+                                    <span className="block text-[9px] font-black uppercase text-gray-400 mb-2 sticky top-0 bg-white pb-1">Cronograma de Cortes</span>
+                                    <div className="space-y-1">
+                                        {calculos.cronograma.map(c => (
+                                            <div key={c.numero} className={`flex justify-between items-center p-1.5 rounded text-[10px] uppercase font-black tracking-wider ${c.estado === 'proximo' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'text-gray-500'}`}>
+                                                <span>Corte #{c.numero}</span>
+                                                <span className="flex items-center gap-1">
+                                                    {c.fecha}
+                                                    {c.estado === 'proximo' ? <span className="text-amber-600">(Próximo)</span> : <span className="text-green-500">✓</span>}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <div className={`p-3 rounded-xl border mb-4 text-center shadow-inner transition-colors duration-300 ${cargando ? 'bg-gray-50 border-gray-200' : calculos.pendiente > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-green-50 border-green-200 text-green-800'}`}>
                                 <p className="text-[10px] font-black uppercase tracking-widest mb-1">{cargando ? 'Calculando...' : calculos.pendiente > 0 ? ' Interés Atrasado (Pendiente)' : 'Interés Pendiente'}</p>
