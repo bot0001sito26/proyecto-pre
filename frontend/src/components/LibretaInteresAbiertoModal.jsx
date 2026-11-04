@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import supabase from '../supabaseClient';
 import ConfirmModal from './ConfirmModal';
+import { generarLibretaPDF } from '../utils/generarLibretaPDF';
 
 export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinalizar, onUpdate }) {
     const [movimientos, setMovimientos] = useState([]);
@@ -337,9 +338,23 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
                             Libreta Abierta
                         </span>
-                        <button onClick={onClose} className="text-neutral-400 hover:text-white transition p-1">
-                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
+
+                        <div className="flex gap-4">
+                            {/* BOTÓN DE DESCARGA PDF AÑADIDO AQUÍ */}
+                            <button
+                                onClick={() => generarLibretaPDF(prestamo, movimientos, calculos)}
+                                disabled={cargando}
+                                className="text-neutral-400 hover:text-white transition flex items-center gap-1 text-[10px] uppercase font-bold"
+                                title="Descargar Estado de Cuenta"
+                            >
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                PDF
+                            </button>
+
+                            <button onClick={onClose} className="text-neutral-400 hover:text-white transition p-1">
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                        </div>
                     </div>
 
                     <div className="p-4 md:p-6 overflow-y-auto flex-1 bg-amber-50/20 select-none space-y-4">

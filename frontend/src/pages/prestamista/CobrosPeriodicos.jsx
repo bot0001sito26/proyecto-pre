@@ -44,18 +44,10 @@ export default function CobrosPeriodicos() {
             .eq('prestamista_id', user.id)
             .eq('estado', 'activo');
 
-        // Lógica para filtrar los prestamos especiales (por dias)
-        // Lógica para mapear las pestañas con los valores reales de la base de datos
-        if (modalidadActiva === 'semanal') {
-            query = query.eq('frecuencia', 'dias_7');
-        } else if (modalidadActiva === 'quincenal') {
-            query = query.eq('frecuencia', 'dias_15');
-        } else if (modalidadActiva === 'mensual') {
-            query = query.eq('frecuencia', 'mensual');
-        } else if (modalidadActiva === 'especial') {
-            // Filtramos todo lo que sea dias_, pero excluimos expresamente el 7 y el 15
-            query = query.like('frecuencia', 'dias_%').neq('frecuencia', 'dias_7').neq('frecuencia', 'dias_15');
-        }
+        if (modalidadActiva === 'semanal') query = query.eq('frecuencia', 'dias_7');
+        else if (modalidadActiva === 'quincenal') query = query.eq('frecuencia', 'dias_15');
+        else if (modalidadActiva === 'mensual') query = query.eq('frecuencia', 'mensual');
+        else if (modalidadActiva === 'especial') query = query.like('frecuencia', 'dias_%').neq('frecuencia', 'dias_7').neq('frecuencia', 'dias_15');
 
         const { data, error } = await query;
 
@@ -66,35 +58,32 @@ export default function CobrosPeriodicos() {
                 let mensajeAtraso = '';
 
                 if (p.tipo_prestamo === 'mensual_interes') {
+                    // LÓGICA SINCRONIZADA CON EL MODAL (SOBRE CAPITAL ORIGINAL)
+                    let cortesPorMes = 1;
+                    if (p.frecuencia === 'dias_7') cortesPorMes = 4;
+                    else if (p.frecuencia === 'dias_15') cortesPorMes = 2;
+                    else if (p.frecuencia.startsWith('dias_')) cortesPorMes = 30 / parseInt(p.frecuencia.split('_')[1]);
+
+                    const capitalOriginal = parseFloat(p.monto_total);
+                    const interesPorCorteFijo = (capitalOriginal * 0.20) / cortesPorMes;
+
+                    const pagado = (p.movimientos_mensuales || []).filter(m => m.tipo === 'pago_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
+                    const ajustes = (p.movimientos_mensuales || []).filter(m => m.tipo === 'ajuste_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
 
                     if (p.frecuencia.startsWith('dias_')) {
-                        // LÓGICA DE INTERÉS ABIERTO POR DÍAS (ESPECIAL)
                         const diasFrecuencia = parseInt(p.frecuencia.split('_')[1]);
-                        const capitalOriginal = parseFloat(p.monto_total);
                         let generado = 0;
                         let cortesTranscurridos = 0;
+                        let fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia);
 
-                        let fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia * (cortesTranscurridos + 1));
-
-                        // Calculamos todos los cortes que ya pasaron hasta el día de hoy
                         while (fechaCorteEfectiva <= hoyStr) {
-                            const abonosCorte = (p.movimientos_mensuales || [])
-                                .filter(m => m.tipo === 'abono_capital' && m.fecha <= fechaCorteEfectiva)
-                                .reduce((sum, m) => sum + parseFloat(m.monto), 0);
-
-                            const capitalBase = Math.max(0, capitalOriginal - abonosCorte);
-                            generado += (capitalBase * 0.20);
-
+                            generado += interesPorCorteFijo;
                             cortesTranscurridos++;
                             fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia * (cortesTranscurridos + 1));
                         }
 
-                        const pagado = (p.movimientos_mensuales || [])
-                            .filter(m => m.tipo === 'pago_interes')
-                            .reduce((sum, m) => sum + parseFloat(m.monto), 0);
-
-                        const pendiente = generado - pagado;
-                        fechaVencimiento = fechaCorteEfectiva; // El próximo corte a futuro
+                        const pendiente = generado - pagado - ajustes;
+                        fechaVencimiento = fechaCorteEfectiva;
 
                         if (pendiente > 0.01) {
                             atrasado = true;
@@ -102,43 +91,23 @@ export default function CobrosPeriodicos() {
                         }
 
                     } else {
-                        // LÓGICA DE INTERÉS ABIERTO MENSUAL CLÁSICO
                         const [anioIni, mesIni, diaIni] = p.fecha_inicio.split('-').map(Number);
                         const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
 
                         let generado = 0;
                         let mesCorte = mesIni + 1;
                         let anioCorte = anioIni;
-                        let mesesTranscurridos = 0;
-                        const capitalOriginal = parseFloat(p.monto_total);
+                        let cortesTranscurridos = 0;
 
                         while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
-                            mesesTranscurridos++;
-                            const ultimoDia = new Date(anioCorte, mesCorte, 0).getDate();
-                            const diaCorteEfectivo = Math.min(diaIni, ultimoDia);
-                            const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaCorteEfectivo);
-
-                            const abonos = (p.movimientos_mensuales || [])
-                                .filter(m => m.tipo === 'abono_capital')
-                                .reduce((sum, m) => {
-                                    const [mA, mM, mD] = m.fecha.split('-').map(Number);
-                                    const fechaM = new Date(mA, mM - 1, mD);
-                                    return fechaM <= fechaCorteFija ? sum + parseFloat(m.monto) : sum;
-                                }, 0);
-
-                            const capitalBase = Math.max(0, capitalOriginal - abonos);
-                            generado += (capitalBase * 0.20);
-
+                            generado += interesPorCorteFijo;
+                            cortesTranscurridos++;
                             mesCorte++;
                             if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
                         }
 
-                        const pagado = (p.movimientos_mensuales || [])
-                            .filter(m => m.tipo === 'pago_interes')
-                            .reduce((sum, m) => sum + parseFloat(m.monto), 0);
-
-                        const pendiente = generado - pagado;
-                        const proximoMesCorte = mesIni + mesesTranscurridos + 1;
+                        const pendiente = generado - pagado - ajustes;
+                        const proximoMesCorte = mesIni + cortesTranscurridos + 1;
                         const ultimoDiaProxMes = new Date(anioIni, proximoMesCorte, 0).getDate();
                         const diaCorteProxEfectivo = Math.min(diaIni, ultimoDiaProxMes);
                         const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaCorteProxEfectivo);
@@ -152,7 +121,6 @@ export default function CobrosPeriodicos() {
                     }
 
                 } else {
-                    // LÓGICA DE CUOTA FIJA
                     const pendientes = (p.historial_pagos || [])
                         .filter(pago => pago.estado_cobro === 'pendiente' || pago.estado_cobro === 'no_pago')
                         .sort((a, b) => a.fecha_cobro.localeCompare(b.fecha_cobro));
@@ -298,7 +266,7 @@ export default function CobrosPeriodicos() {
                                         </div>
                                     </div>
                                     <div className="text-right flex flex-col items-end">
-                                        <p className="font-black text-gray-800 text-xl">${p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_capital) * 0.20).toFixed(2) : p.valor_cuota}</p>
+                                        <p className="font-black text-gray-800 text-xl">${p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20).toFixed(2) : p.valor_cuota}</p>
                                         <button onClick={() => abrirModal(p)} className="mt-2 bg-amber-50 text-amber-700 hover:bg-amber-100 font-black tracking-widest uppercase text-[9px] px-4 py-2 rounded-lg transition-colors border border-amber-200 shadow-sm">
                                             {p.tipo_prestamo === 'mensual_interes' ? 'Abrir Libreta' : 'Abrir Cartulina'}
                                         </button>

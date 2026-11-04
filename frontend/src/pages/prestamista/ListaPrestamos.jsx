@@ -5,7 +5,9 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import CartulinaModal from '../../components/CartulinaModal';
 import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
 import ClienteAcordeon from '../../components/ClienteAcordeon';
-import { generarReporteCarteraPDF } from '../../utils/generarPDF';
+import { generarReporteCarteraPDF } from '../../utils/generarReporteCarteraPDF';
+import { generarReporteCajaPDF } from '../../utils/generarReporteCajaPDF';
+import { generarReporteGananciasPDF } from '../../utils/generarReporteGananciasPDF';
 
 const ACORDEONES_POR_PAGINA = 15;
 
@@ -22,9 +24,7 @@ export default function ListaPrestamos() {
     const [fechaHasta, setFechaHasta] = useState(hoyStr);
     const [busqueda, setBusqueda] = useState('');
     const [pagina, setPagina] = useState(1);
-
-    // NUEVO ESTADO: Privacidad (Ojito)
-    const [mostrarValores, setMostrarValores] = useState(false);
+    const [mostrarValores, setMostrarValores] = useState(false); // Estado de censura
 
     const [prestamos, setPrestamos] = useState(() => {
         try { return JSON.parse(sessionStorage.getItem('anubis_prestamos')) || []; } catch { return []; }
@@ -205,14 +205,32 @@ export default function ListaPrestamos() {
                             <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition" />
                         </div>
 
-                        <button onClick={() => generarReporteCarteraPDF(prestamosEnRango, fechaDesde, fechaHasta)} className="w-full md:w-auto bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-5 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2 whitespace-nowrap h-[46px] text-xs">
-                            <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                            PDF Fechas
-                        </button>
-                        <button onClick={() => generarReporteCarteraPDF(todosLosActivos, 'INICIO', 'ACTUALIDAD')} className="w-full md:w-auto bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 px-5 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2 whitespace-nowrap h-[46px] text-xs">
-                            <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                            Todos Activos
-                        </button>
+                        {/* BOTONES DE DESCARGA */}
+                        <div className="flex flex-wrap w-full md:w-auto gap-2">
+                            {/* Cartera: Icono de carpeta/portafolio minimalista */}
+                            <button onClick={() => generarReporteCarteraPDF(prestamosEnRango, fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Préstamos creados en estas fechas">
+                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                                Cartera
+                            </button>
+
+                            {/* Caja: Icono de billetera / flujo de efectivo */}
+                            <button onClick={() => generarReporteCajaPDF(fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Todo el dinero físico ingresado">
+                                <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
+                                Caja
+                            </button>
+
+                            {/* Ganancia: Icono de tendencia al alza / finanzas */}
+                            <button onClick={() => generarReporteGananciasPDF(fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Solo el interés neto ganado">
+                                <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                Ganancia
+                            </button>
+
+                            {/* Activos: Icono de capas / base de datos o registros activos */}
+                            <button onClick={() => generarReporteCarteraPDF(todosLosActivos, 'INICIO', 'ACTUALIDAD')} className="flex-1 md:flex-none bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Préstamos activos globales">
+                                <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+                                Activos
+                            </button>
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 text-center">

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import supabase from '../supabaseClient';
 import ConfirmModal from './ConfirmModal';
-import { generarCartulinaPDF } from '../utils/generarPDF';
+import { generarCartulinaPDF } from '../utils/generarCartulinaPDF';
 
 export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinalizar, onUpdate, fechaRuta }) {
     const [cuotas, setCuotas] = useState([]);

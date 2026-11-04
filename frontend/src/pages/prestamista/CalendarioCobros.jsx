@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import supabase from '../../supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
-import { generarReporteRutaPDF } from '../../utils/generarPDF';
+import { generarReporteRutaPDF } from '../../utils/generarReporteRutaPDF';
 import CartulinaModal from '../../components/CartulinaModal';
 import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
 
