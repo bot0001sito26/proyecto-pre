@@ -5,6 +5,116 @@ import { Link, useNavigate } from 'react-router-dom';
 import CartulinaModal from '../../components/CartulinaModal';
 import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
 
+// ----------------------------------------------------
+// FUNCIONES ESTRICTAS EN UTC PARA EVITAR SALTOS DE DÍAS 
+// ----------------------------------------------------
+const sumarDias = (fechaBaseStr, dias) => {
+    const [a, m, d] = fechaBaseStr.split('-').map(Number);
+    const fecha = new Date(Date.UTC(a, m - 1, d));
+    fecha.setUTCDate(fecha.getUTCDate() + dias);
+    return fecha.toISOString().split('T')[0];
+};
+
+const sumarMesesPreservandoDia = (fechaBaseStr, mesesAMultiplicar) => {
+    const [anioIni, mesIni, diaIni] = fechaBaseStr.split('-').map(Number);
+    const fechaDestino = new Date(Date.UTC(anioIni, mesIni - 1 + mesesAMultiplicar, 1));
+    const anioDestino = fechaDestino.getUTCFullYear();
+    const mesDestino = fechaDestino.getUTCMonth();
+    const ultimoDia = new Date(Date.UTC(anioDestino, mesDestino + 1, 0)).getUTCDate();
+    const diaEfectivo = Math.min(diaIni, ultimoDia);
+    return `${anioDestino}-${String(mesDestino + 1).padStart(2, '0')}-${String(diaEfectivo).padStart(2, '0')}`;
+};
+
+// ----------------------------------------------------
+// SUB-COMPONENTE: ACORDEÓN PARA GRUPOS DE PRÉSTAMOS
+// ----------------------------------------------------
+function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
+    const [expandido, setExpandido] = useState(false);
+    const mult = grupo.prestamosAgrupados.length > 1;
+    const pPrincipal = grupo.prestamosAgrupados[0];
+
+    return (
+        <div className={`bg-white rounded-2xl shadow-sm border-l-4 overflow-hidden transition-all hover:shadow-md ${grupo.atrasado ? 'border-l-red-500 bg-red-50/20' : 'border-l-amber-400'}`}>
+            <div onClick={() => mult ? setExpandido(!expandido) : undefined} className={`p-4 flex justify-between items-center ${mult ? 'cursor-pointer hover:bg-gray-50' : ''}`}>
+                <div>
+                    <div className="flex items-center gap-2">
+                        <h2 className="font-bold text-gray-800 text-lg">{grupo.clientes.nombre}</h2>
+                        {mult && (
+                            <span className="bg-amber-100 text-amber-800 text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider border border-amber-200">
+                                {grupo.prestamosAgrupados.length} Créditos
+                            </span>
+                        )}
+                    </div>
+                    <p className="text-xs font-bold text-gray-400 mb-1 flex items-center gap-1">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+                        {grupo.clientes.telefono || 'Sin número'}
+                    </p>
+
+                    <div className={`text-[11px] font-black mb-2 flex flex-col ${grupo.atrasado ? 'text-red-600' : 'text-neutral-600'}`}>
+                        {grupo.atrasado ? (
+                            <>
+                                <span className="flex items-center gap-1">{grupo.mensajeAtraso}</span>
+                                <span className="text-[9px] text-red-400 mt-0.5">Vencimiento más próximo: {grupo.fechaVencimiento}</span>
+                            </>
+                        ) : (
+                            `🗓️ Próximo Pago: ${grupo.fechaVencimiento}`
+                        )}
+                    </div>
+
+                    {!mult && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                            {pPrincipal.tipo_prestamo === 'mensual_interes' && (
+                                <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded border ${pPrincipal.frecuencia.startsWith('dias_') ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-purple-100 text-purple-800 border-purple-200'}`}>
+                                    {pPrincipal.frecuencia.startsWith('dias_') ? `Interés (${pPrincipal.frecuencia.split('_')[1]} Días)` : 'Interés Abierto'}
+                                </span>
+                            )}
+                            {pPrincipal.cobrador === 'ayudante' && (
+                                <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">Ayudante</span>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div className="text-right flex flex-col items-end justify-center gap-1">
+                    <p className="font-black text-gray-800 text-xl">${grupo.montoTotalSuma.toFixed(2)}</p>
+                    {!mult ? (
+                        <button onClick={(e) => { e.stopPropagation(); abrirModal(pPrincipal); }} className="mt-2 bg-amber-50 text-amber-700 hover:bg-amber-100 font-black tracking-widest uppercase text-[9px] px-4 py-2 rounded-lg transition-colors border border-amber-200 shadow-sm">
+                            {pPrincipal.tipo_prestamo === 'mensual_interes' ? 'Abrir Libreta' : 'Abrir Cartulina'}
+                        </button>
+                    ) : (
+                        <svg className={`w-6 h-6 text-gray-400 mt-2 transition-transform ${expandido ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    )}
+                </div>
+            </div>
+
+            {/* Contenido Expandible para múltiples préstamos */}
+            {mult && expandido && (
+                <div className="p-3 bg-gray-50/80 border-t border-gray-100 divide-y divide-gray-200">
+                    {grupo.prestamosAgrupados.map((subP) => (
+                        <div key={subP.id} className="py-3 flex justify-between items-center first:pt-1 last:pb-1">
+                            <div>
+                                <p className="font-black text-gray-800 text-sm">Capital: ${subP.monto_capital}</p>
+                                <p className="text-[11px] font-bold text-amber-600 mb-1">
+                                    Cuota/Int: ${subP.tipo_prestamo === 'mensual_interes' ? (parseFloat(subP.monto_total) * 0.20).toFixed(2) : subP.valor_cuota}
+                                </p>
+                                <p className={`text-[9px] font-bold uppercase tracking-wider ${subP.atrasado ? 'text-red-500' : 'text-gray-500'}`}>
+                                    {subP.tipo_prestamo === 'mensual_interes' ? (subP.frecuencia.startsWith('dias_') ? `Int. (${subP.frecuencia.split('_')[1]} Días)` : 'Interés Abierto') : 'Cuota Fija'} • Corte: {subP.fechaVencimiento}
+                                </p>
+                            </div>
+                            <button onClick={(e) => { e.stopPropagation(); abrirModal(subP); }} className="bg-white text-amber-600 text-[10px] font-black px-3 py-2 rounded-lg hover:bg-amber-50 transition uppercase tracking-widest border border-amber-200 shadow-sm">
+                                {subP.tipo_prestamo === 'mensual_interes' ? 'Libreta' : 'Cartulina'}
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ----------------------------------------------------
+// VISTA PRINCIPAL
+// ----------------------------------------------------
 export default function CobrosPeriodicos() {
     const { user } = useAuth();
     const navigate = useNavigate();
@@ -22,13 +132,6 @@ export default function CobrosPeriodicos() {
     useEffect(() => {
         if (user?.id) fetchPrestamosPeriodicos();
     }, [user, modalidadActiva]);
-
-    const sumarDias = (fechaBaseStr, dias) => {
-        const [a, m, d] = fechaBaseStr.split('-').map(Number);
-        const fecha = new Date(a, m - 1, d, 12, 0, 0);
-        fecha.setDate(fecha.getDate() + dias);
-        return fecha.toISOString().split('T')[0];
-    };
 
     const fetchPrestamosPeriodicos = async () => {
         setCargando(true);
@@ -58,7 +161,6 @@ export default function CobrosPeriodicos() {
                 let mensajeAtraso = '';
 
                 if (p.tipo_prestamo === 'mensual_interes') {
-                    // LÓGICA SINCRONIZADA CON EL MODAL (SOBRE CAPITAL ORIGINAL)
                     let cortesPorMes = 1;
                     if (p.frecuencia === 'dias_7') cortesPorMes = 4;
                     else if (p.frecuencia === 'dias_15') cortesPorMes = 2;
@@ -91,28 +193,21 @@ export default function CobrosPeriodicos() {
                         }
 
                     } else {
-                        const [anioIni, mesIni, diaIni] = p.fecha_inicio.split('-').map(Number);
-                        const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
-
+                        // LÓGICA MENSUAL SINCRONIZADA ESTRICTA EN UTC
+                        let i = 1;
                         let generado = 0;
-                        let mesCorte = mesIni + 1;
-                        let anioCorte = anioIni;
                         let cortesTranscurridos = 0;
+                        let fechaCorteEfectiva = sumarMesesPreservandoDia(p.fecha_inicio, i);
 
-                        while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
+                        while (fechaCorteEfectiva <= hoyStr) {
                             generado += interesPorCorteFijo;
                             cortesTranscurridos++;
-                            mesCorte++;
-                            if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
+                            i++;
+                            fechaCorteEfectiva = sumarMesesPreservandoDia(p.fecha_inicio, i);
                         }
 
                         const pendiente = generado - pagado - ajustes;
-                        const proximoMesCorte = mesIni + cortesTranscurridos + 1;
-                        const ultimoDiaProxMes = new Date(anioIni, proximoMesCorte, 0).getDate();
-                        const diaCorteProxEfectivo = Math.min(diaIni, ultimoDiaProxMes);
-                        const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaCorteProxEfectivo);
-
-                        fechaVencimiento = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
+                        fechaVencimiento = fechaCorteEfectiva;
 
                         if (pendiente > 0.01) {
                             atrasado = true;
@@ -156,7 +251,43 @@ export default function CobrosPeriodicos() {
             return coincideCobrador && coincideTexto;
         });
 
-        return filtrados.sort((a, b) => {
+        // AGRUPACIÓN INTELIGENTE POR CLIENTE PARA EL ACORDEÓN
+        const agrupadosPorCliente = {};
+        filtrados.forEach(p => {
+            const clienteId = p.clientes.id;
+            if (!agrupadosPorCliente[clienteId]) {
+                agrupadosPorCliente[clienteId] = {
+                    ...p,
+                    prestamosAgrupados: [p],
+                    montoTotalSuma: parseFloat(p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20) : p.valor_cuota),
+                    atrasadoAlguna: p.atrasado,
+                    mensajesAtraso: p.mensajeAtraso ? [p.mensajeAtraso] : []
+                };
+            } else {
+                const item = agrupadosPorCliente[clienteId];
+                item.prestamosAgrupados.push(p);
+                item.montoTotalSuma += parseFloat(p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20) : p.valor_cuota);
+
+                if (p.atrasado) {
+                    item.atrasadoAlguna = true;
+                    if (p.mensajeAtraso && !item.mensajesAtraso.includes(p.mensajeAtraso)) {
+                        item.mensajesAtraso.push(p.mensajeAtraso);
+                    }
+                }
+                // Conservar la fecha de vencimiento más antigua/próxima
+                if (p.fechaVencimiento.localeCompare(item.fechaVencimiento) < 0) {
+                    item.fechaVencimiento = p.fechaVencimiento;
+                }
+            }
+        });
+
+        const resultadoFinal = Object.values(agrupadosPorCliente).map(item => ({
+            ...item,
+            atrasado: item.atrasadoAlguna,
+            mensajeAtraso: item.mensajesAtraso.join(' | ')
+        }));
+
+        return resultadoFinal.sort((a, b) => {
             if (a.atrasado && !b.atrasado) return -1;
             if (!a.atrasado && b.atrasado) return 1;
             return a.fechaVencimiento.localeCompare(b.fechaVencimiento);
@@ -229,50 +360,8 @@ export default function CobrosPeriodicos() {
                             <p className="text-gray-400 font-medium">{busqueda ? 'No se encontraron clientes con ese nombre.' : 'No hay créditos activos en esta modalidad.'}</p>
                         </div>
                     ) : (
-                        prestamosFiltrados.map((p) => (
-                            <div key={p.id} className={`bg-white p-4 rounded-2xl shadow-sm border-l-4 transition-all hover:shadow-md ${p.atrasado ? 'border-l-red-500 bg-red-50/20' : 'border-l-amber-400'}`}>
-                                <div className="flex justify-between items-center">
-                                    <div>
-                                        <h2 className="font-bold text-gray-800 text-lg">{p.clientes.nombre}</h2>
-                                        <p className="text-xs font-bold text-gray-400 mb-1 flex items-center gap-1">
-                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
-                                            {p.clientes.telefono || 'Sin número'}
-                                        </p>
-
-                                        <div className={`text-[11px] font-black mb-2 flex flex-col ${p.atrasado ? 'text-red-600' : 'text-neutral-600'}`}>
-                                            {p.atrasado ? (
-                                                <>
-                                                    <span className="flex items-center gap-1">{p.mensajeAtraso}</span>
-                                                    {p.tipo_prestamo === 'mensual_interes' ? (
-                                                        <span className="text-[9px] text-red-400 mt-0.5">Próximo corte: {p.fechaVencimiento}</span>
-                                                    ) : (
-                                                        <span className="text-[9px] text-red-400 mt-0.5">Atrasada desde: {p.fechaVencimiento}</span>
-                                                    )}
-                                                </>
-                                            ) : (
-                                                `🗓️ Próximo Pago: ${p.fechaVencimiento}`
-                                            )}
-                                        </div>
-
-                                        <div className="flex items-center gap-2">
-                                            {p.tipo_prestamo === 'mensual_interes' && (
-                                                <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded border ${p.frecuencia.startsWith('dias_') ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-purple-100 text-purple-800 border-purple-200'}`}>
-                                                    {p.frecuencia.startsWith('dias_') ? `Interés (${p.frecuencia.split('_')[1]} Días)` : 'Interés Abierto'}
-                                                </span>
-                                            )}
-                                            {p.cobrador === 'ayudante' && (
-                                                <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">Ayudante</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <div className="text-right flex flex-col items-end">
-                                        <p className="font-black text-gray-800 text-xl">${p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20).toFixed(2) : p.valor_cuota}</p>
-                                        <button onClick={() => abrirModal(p)} className="mt-2 bg-amber-50 text-amber-700 hover:bg-amber-100 font-black tracking-widest uppercase text-[9px] px-4 py-2 rounded-lg transition-colors border border-amber-200 shadow-sm">
-                                            {p.tipo_prestamo === 'mensual_interes' ? 'Abrir Libreta' : 'Abrir Cartulina'}
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
+                        prestamosFiltrados.map((grupo) => (
+                            <PrestamoGrupoAcordeon key={grupo.id} grupo={grupo} abrirModal={abrirModal} />
                         ))
                     )}
                 </div>

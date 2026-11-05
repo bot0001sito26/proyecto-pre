@@ -20,11 +20,15 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
     const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
 
-    // Edición de Parámetros
+    // Edición de Parámetros (Frecuencia / Refinanciamiento original)
     const [editandoParametros, setEditandoParametros] = useState(false);
     const [nuevaFecha, setNuevaFecha] = useState('');
     const [nuevaFrecuencia, setNuevaFrecuencia] = useState('');
     const [nuevosDiasEspeciales, setNuevosDiasEspeciales] = useState('');
+
+    // Edición independiente de la fecha de inicio (con el botón de lápiz)
+    const [editandoFechaInicio, setEditandoFechaInicio] = useState(false);
+    const [fechaInicioTemporal, setFechaInicioTemporal] = useState('');
 
     const hoyStr = useMemo(() => {
         const d = new Date();
@@ -48,17 +52,31 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         return 1;
     }, [frecuencia, isFrecuenciaPorDias, diasFrecuencia]);
 
+    // ----------------------------------------------------
+    // FUNCIONES ESTRICTAS EN UTC (SINCRONIZADAS)
+    // ----------------------------------------------------
     const sumarDias = (fechaBaseStr, dias) => {
         const [a, m, d] = fechaBaseStr.split('-').map(Number);
-        const fecha = new Date(a, m - 1, d, 12, 0, 0);
-        fecha.setDate(fecha.getDate() + dias);
+        const fecha = new Date(Date.UTC(a, m - 1, d));
+        fecha.setUTCDate(fecha.getUTCDate() + dias);
         return fecha.toISOString().split('T')[0];
+    };
+
+    const sumarMesesPreservandoDia = (fechaBaseStr, mesesAMultiplicar) => {
+        const [anioIni, mesIni, diaIni] = fechaBaseStr.split('-').map(Number);
+        const fechaDestino = new Date(Date.UTC(anioIni, mesIni - 1 + mesesAMultiplicar, 1));
+        const anioDestino = fechaDestino.getUTCFullYear();
+        const mesDestino = fechaDestino.getUTCMonth();
+        const ultimoDia = new Date(Date.UTC(anioDestino, mesDestino + 1, 0)).getUTCDate();
+        const diaEfectivo = Math.min(diaIni, ultimoDia);
+        return `${anioDestino}-${String(mesDestino + 1).padStart(2, '0')}-${String(diaEfectivo).padStart(2, '0')}`;
     };
 
     useEffect(() => {
         if (prestamoId) {
             setCobradorLocal(cobrador || 'principal');
             setNuevaFecha(fechaInicio || '');
+            setFechaInicioTemporal(fechaInicio || '');
 
             if (frecuencia === 'mensual') setNuevaFrecuencia('mensual');
             else if (frecuencia === 'dias_7') setNuevaFrecuencia('dias_7');
@@ -84,7 +102,6 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     const calculos = useMemo(() => {
         if (!fechaInicio) return { cortes: 0, generado: 0, pagado: 0, ajustes: 0, pendiente: 0, proximoCorte: '', cronograma: [] };
 
-        // CÁLCULO LINEAL Y DIRECTO BASADO EN EL CAPITAL ORIGINAL
         const capitalOriginal = parseFloat(montoTotal);
         const interesPorCorteFijo = (capitalOriginal * 0.20) / cortesPorMes;
 
@@ -96,7 +113,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         if (isFrecuenciaPorDias) {
             let fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia);
             while (fechaCorteEfectiva <= hoyStr) {
-                generado += interesPorCorteFijo; // Suma directa, sin restar abonos
+                generado += interesPorCorteFijo;
                 cortesTranscurridos++;
                 cronograma.push({ numero: cortesTranscurridos, fecha: fechaCorteEfectiva, estado: 'pasado' });
                 fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia * (cortesTranscurridos + 1));
@@ -104,31 +121,17 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
             proximoCorteStr = fechaCorteEfectiva;
             cronograma.push({ numero: cortesTranscurridos + 1, fecha: proximoCorteStr, estado: 'proximo' });
         } else {
-            // Mensual puro
-            const [anioIni, mesIni, diaIni] = fechaInicio.split('-').map(Number);
-            const [anioHoy, mesHoy, diaHoy] = hoyStr.split('-').map(Number);
-            let mesCorte = mesIni + 1;
-            let anioCorte = anioIni;
+            let i = 1;
+            let fechaCorteEfectiva = sumarMesesPreservandoDia(fechaInicio, i);
 
-            while (anioCorte < anioHoy || (anioCorte === anioHoy && mesCorte < mesHoy) || (anioCorte === anioHoy && mesCorte === mesHoy && diaIni <= diaHoy)) {
+            while (fechaCorteEfectiva <= hoyStr) {
+                generado += interesPorCorteFijo;
                 cortesTranscurridos++;
-                const ultimoDia = new Date(anioCorte, mesCorte, 0).getDate();
-                const diaCorteEfectivo = Math.min(diaIni, ultimoDia);
-                const fechaCorteFija = new Date(anioCorte, mesCorte - 1, diaCorteEfectivo);
-                const fechaArmada = `${fechaCorteFija.getFullYear()}-${String(fechaCorteFija.getMonth() + 1).padStart(2, '0')}-${String(fechaCorteFija.getDate()).padStart(2, '0')}`;
-
-                generado += interesPorCorteFijo; // Suma directa, sin restar abonos
-                cronograma.push({ numero: cortesTranscurridos, fecha: fechaArmada, estado: 'pasado' });
-
-                mesCorte++;
-                if (mesCorte > 12) { mesCorte = 1; anioCorte++; }
+                cronograma.push({ numero: cortesTranscurridos, fecha: fechaCorteEfectiva, estado: 'pasado' });
+                i++;
+                fechaCorteEfectiva = sumarMesesPreservandoDia(fechaInicio, i);
             }
-            const proximoMesCorte = mesIni + cortesTranscurridos + 1;
-            const ultimoDiaProxMes = new Date(anioIni, proximoMesCorte, 0).getDate();
-            const diaCorteProxEfectivo = Math.min(diaIni, ultimoDiaProxMes);
-            const proxCorteDate = new Date(anioIni, proximoMesCorte - 1, diaCorteProxEfectivo);
-            proximoCorteStr = `${proxCorteDate.getFullYear()}-${String(proxCorteDate.getMonth() + 1).padStart(2, '0')}-${String(proxCorteDate.getDate()).padStart(2, '0')}`;
-
+            proximoCorteStr = fechaCorteEfectiva;
             cronograma.push({ numero: cortesTranscurridos + 1, fecha: proximoCorteStr, estado: 'proximo' });
         }
 
@@ -139,7 +142,6 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         return { cortes: cortesTranscurridos, generado, pagado, ajustes, pendiente: Math.max(0, pendiente), proximoCorte: proximoCorteStr, cronograma };
     }, [fechaInicio, montoTotal, hoyStr, isFrecuenciaPorDias, diasFrecuencia, cortesPorMes, movimientos]);
 
-    // UI Helpers ahora amarrados al montoTotal (original) para mantener concordancia
     const interesSugeridoMensual = useMemo(() => (parseFloat(montoTotal || 0) * 0.20).toFixed(2), [montoTotal]);
     const interesPorCorteSugerido = useMemo(() => (parseFloat(montoTotal || 0) * 0.20 / cortesPorMes).toFixed(2), [montoTotal, cortesPorMes]);
 
@@ -181,10 +183,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         if (!error && nuevoPrestamo) {
             let fechaCobroStr = '';
             if (frecFinal === 'mensual') {
-                const [a, m, d] = nuevaFecha.split('-').map(Number);
-                let prox = new Date(a, m - 1, d, 12, 0, 0);
-                prox.setMonth(prox.getMonth() + 1);
-                fechaCobroStr = prox.toISOString().split('T')[0];
+                fechaCobroStr = sumarMesesPreservandoDia(nuevaFecha, 1);
             } else {
                 const dExtra = parseInt(frecFinal.split('_')[1]) || 30;
                 fechaCobroStr = sumarDias(nuevaFecha, dExtra);
@@ -247,6 +246,40 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                 }
             });
         }
+    };
+
+    const guardarFechaInicio = async () => {
+        if (!fechaInicioTemporal) return;
+        setModalConf({
+            isOpen: true,
+            titulo: 'Corregir Fecha de Inicio',
+            mensaje: `¿Deseas actualizar la fecha de inicio a ${fechaInicioTemporal}? Se recalcularán los cortes y se actualizará el registro en el historial.`,
+            accion: async () => {
+                setModalConf({ isOpen: false, accion: null });
+                setCargando(true);
+
+                const { error: errPrestamo } = await supabase.from('prestamos').update({ fecha_inicio: fechaInicioTemporal }).eq('id', prestamoId);
+
+                if (errPrestamo) {
+                    alert("Error al actualizar la fecha del préstamo: " + errPrestamo.message);
+                    setCargando(false);
+                    return;
+                }
+
+                await supabase.from('movimientos_mensuales')
+                    .update({
+                        fecha: fechaInicioTemporal,
+                        notas: 'Fecha de inicio corregida'
+                    })
+                    .eq('prestamo_id', prestamoId)
+                    .eq('tipo', 'corte_mes');
+
+                setEditandoFechaInicio(false);
+                setCargando(false);
+                fetchMovimientos();
+                if (onUpdate) onUpdate();
+            }
+        });
     };
 
     const ejecutarGuardado = async (monto) => {
@@ -340,7 +373,6 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                         </span>
 
                         <div className="flex gap-4">
-                            {/* BOTÓN DE DESCARGA PDF AÑADIDO AQUÍ */}
                             <button
                                 onClick={() => generarLibretaPDF(prestamo, movimientos, calculos)}
                                 disabled={cargando}
@@ -405,10 +437,37 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                     </div>
                                 ) : (
                                     <>
-                                        <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
-                                            <span className="w-24 text-neutral-400">Inicio:</span>
-                                            <span>{fechaInicio}</span>
+                                        <div className="flex justify-between items-center border-b border-neutral-200 border-dashed pb-1 mb-1">
+                                            <div className="flex items-center gap-2">
+                                                <span className="w-24 text-neutral-400">Inicio:</span>
+                                                {editandoFechaInicio ? (
+                                                    <div className="flex items-center gap-1">
+                                                        <input
+                                                            type="date"
+                                                            value={fechaInicioTemporal}
+                                                            onChange={(e) => setFechaInicioTemporal(e.target.value)}
+                                                            className="text-xs font-black bg-amber-50 border border-amber-300 rounded px-1 py-0.5 outline-none"
+                                                        />
+                                                        <button onClick={guardarFechaInicio} className="text-[10px] bg-green-600 text-white px-1.5 py-0.5 rounded font-black hover:bg-green-700">✓</button>
+                                                        <button onClick={() => setEditandoFechaInicio(false)} className="text-[10px] bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded font-black hover:bg-gray-300">✕</button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span>{fechaInicio}</span>
+                                                        <button
+                                                            onClick={() => { setFechaInicioTemporal(fechaInicio); setEditandoFechaInicio(true); }}
+                                                            className="text-neutral-400 hover:text-amber-600 transition p-0.5"
+                                                            title="Corregir Fecha de Inicio"
+                                                        >
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
+
                                         <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1">
                                             <span className="w-24 text-neutral-400">Frecuencia:</span>
                                             <span className="font-black text-amber-600">{obtenerTextoFrecuenciaActual()}</span>

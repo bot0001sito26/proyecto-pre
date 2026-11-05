@@ -23,7 +23,7 @@ export default function NuevoPrestamo() {
     const [diasPersonalizados, setDiasPersonalizados] = useState('');
     const [cobrador, setCobrador] = useState('principal');
 
-    const hoyEstandar = new Date().toISOString().split('T')[0];
+    const hoyEstandar = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const [fechaInicio, setFechaInicio] = useState(hoyEstandar);
     const [guardando, setGuardando] = useState(false);
 
@@ -46,11 +46,24 @@ export default function NuevoPrestamo() {
         }
     }, [tipoPrestamo]);
 
+    // ----------------------------------------------------
+    // FUNCIONES ESTRICTAS EN UTC PARA EVITAR SALTOS DE DÍAS 
+    // ----------------------------------------------------
     const sumarDias = (fechaBaseStr, dias) => {
         const [a, m, d] = fechaBaseStr.split('-').map(Number);
-        const fecha = new Date(a, m - 1, d, 12, 0, 0);
-        fecha.setDate(fecha.getDate() + dias);
+        const fecha = new Date(Date.UTC(a, m - 1, d));
+        fecha.setUTCDate(fecha.getUTCDate() + dias);
         return fecha.toISOString().split('T')[0];
+    };
+
+    const sumarMesesPreservandoDia = (fechaBaseStr, mesesAMultiplicar) => {
+        const [anioIni, mesIni, diaIni] = fechaBaseStr.split('-').map(Number);
+        const fechaDestino = new Date(Date.UTC(anioIni, mesIni - 1 + mesesAMultiplicar, 1));
+        const anioDestino = fechaDestino.getUTCFullYear();
+        const mesDestino = fechaDestino.getUTCMonth();
+        const ultimoDia = new Date(Date.UTC(anioDestino, mesDestino + 1, 0)).getUTCDate();
+        const diaEfectivo = Math.min(diaIni, ultimoDia);
+        return `${anioDestino}-${String(mesDestino + 1).padStart(2, '0')}-${String(diaEfectivo).padStart(2, '0')}`;
     };
 
     const handleCrearPrestamo = async (e) => {
@@ -128,10 +141,7 @@ export default function NuevoPrestamo() {
                 } else if (frecuencia === 'quincenal') {
                     fechaCobroStr = sumarDias(fechaInicio, 15);
                 } else {
-                    const [a, m, d] = fechaInicio.split('-').map(Number);
-                    let fechaCobroCorte = new Date(a, m - 1, d, 12, 0, 0);
-                    fechaCobroCorte.setMonth(fechaCobroCorte.getMonth() + 1);
-                    fechaCobroStr = fechaCobroCorte.toISOString().split('T')[0];
+                    fechaCobroStr = sumarMesesPreservandoDia(fechaInicio, 1);
                 }
 
                 pagosGenerados.push({
@@ -180,11 +190,8 @@ export default function NuevoPrestamo() {
             } else if (frecuencia === 'quincenal') {
                 return sumarDias(fechaInicio, 15);
             }
-            // Mensual clásico
-            const [a, m, d] = fechaInicio.split('-').map(Number);
-            const prox = new Date(a, m - 1, d, 12, 0, 0);
-            prox.setMonth(prox.getMonth() + 1);
-            return prox.toISOString().split('T')[0];
+            // Mensual clásico con UTC
+            return sumarMesesPreservandoDia(fechaInicio, 1);
         }
         return '';
     };
@@ -246,7 +253,6 @@ export default function NuevoPrestamo() {
                             )}
                         </div>
 
-                        {/* CONFIGURACIÓN DE FRECUENCIA ESTRICTA */}
                         <div className="bg-gray-50/50 border border-gray-100 p-3 rounded-xl space-y-3">
                             <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Frecuencia de Cobro</label>
 
