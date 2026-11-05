@@ -18,8 +18,8 @@ export default function ListaClientes() {
     const [editNombre, setEditNombre] = useState('');
     const [editTelefono, setEditTelefono] = useState('');
 
-    // Estado para el modal de confirmación
-    const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
+    // Estado para el modal de confirmación y alertas personalizadas
+    const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false });
 
     const [clientes, setClientes] = useState(() => {
         try { return JSON.parse(sessionStorage.getItem('anubis_clientes')) || []; } catch { return []; }
@@ -75,9 +75,31 @@ export default function ListaClientes() {
 
     const handleCrearCliente = async (e) => {
         e.preventDefault();
-        if (!nombre.trim()) return;
+        const nombreLimpio = nombre.trim();
+        if (!nombreLimpio) return;
+
         setGuardando(true);
-        const { error } = await supabase.from('clientes').insert([{ prestamista_id: user.id, nombre, telefono }]);
+
+        // VALIDACIÓN: Evitar clientes duplicados ignorando mayúsculas/minúsculas
+        const { data: existentes } = await supabase
+            .from('clientes')
+            .select('id')
+            .eq('prestamista_id', user.id)
+            .ilike('nombre', nombreLimpio);
+
+        if (existentes && existentes.length > 0) {
+            setModalConf({
+                isOpen: true,
+                titulo: 'Cliente Duplicado',
+                mensaje: `Ya tienes un cliente registrado con el nombre "${nombreLimpio}". (No se permiten duplicados aunque cambies mayúsculas por minúsculas).`,
+                soloAviso: true,
+                accion: () => setModalConf({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false })
+            });
+            setGuardando(false);
+            return;
+        }
+
+        const { error } = await supabase.from('clientes').insert([{ prestamista_id: user.id, nombre: nombreLimpio, telefono }]);
         if (!error) {
             setNombre('');
             setTelefono('');
@@ -86,7 +108,13 @@ export default function ListaClientes() {
             sessionStorage.removeItem('anubis_clientes');
             fetchClientes();
         } else {
-            alert("Error al crear cliente");
+            setModalConf({
+                isOpen: true,
+                titulo: 'Error',
+                mensaje: 'Hubo un error al crear el cliente.',
+                soloAviso: true,
+                accion: () => setModalConf({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false })
+            });
         }
         setGuardando(false);
     };
@@ -97,28 +125,49 @@ export default function ListaClientes() {
         setEditTelefono(cliente.telefono || '');
     };
 
-    const solicitarGuardarEdicion = (id) => {
-        if (!editNombre.trim()) return;
+    const solicitarGuardarEdicion = async (id) => {
+        const nombreLimpio = editNombre.trim();
+        if (!nombreLimpio) return;
+
+        // VALIDACIÓN: Evitar que lo renombren como alguien que ya existe
+        const { data: existentes } = await supabase
+            .from('clientes')
+            .select('id')
+            .eq('prestamista_id', user.id)
+            .ilike('nombre', nombreLimpio)
+            .neq('id', id);
+
+        if (existentes && existentes.length > 0) {
+            setModalConf({
+                isOpen: true,
+                titulo: 'Nombre en Uso',
+                mensaje: `Ya tienes OTRO cliente registrado con el nombre "${nombreLimpio}". Elige un nombre distinto.`,
+                soloAviso: true,
+                accion: () => setModalConf({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false })
+            });
+            return;
+        }
 
         setModalConf({
             isOpen: true,
             titulo: 'Actualizar Cliente',
-            mensaje: `¿Estás seguro que deseas actualizar los datos a ${editNombre}?`,
-            accion: () => ejecutarGuardado(id)
+            mensaje: `¿Estás seguro que deseas actualizar los datos a ${nombreLimpio}?`,
+            soloAviso: false,
+            accion: () => ejecutarGuardado(id, nombreLimpio)
         });
     };
 
-    const ejecutarGuardado = async (id) => {
-        setModalConf({ isOpen: false, accion: null });
+    const ejecutarGuardado = async (id, nombreValido) => {
+        setModalConf({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false });
 
         const { error } = await supabase
             .from('clientes')
-            .update({ nombre: editNombre, telefono: editTelefono })
+            .update({ nombre: nombreValido, telefono: editTelefono })
             .eq('id', id);
 
         if (!error) {
             const clientesActualizados = clientes.map(c =>
-                c.id === id ? { ...c, nombre: editNombre, telefono: editTelefono } : c
+                c.id === id ? { ...c, nombre: nombreValido, telefono: editTelefono } : c
             );
 
             setClientes(clientesActualizados);
@@ -129,7 +178,13 @@ export default function ListaClientes() {
 
             setEditandoId(null);
         } else {
-            alert("Error al actualizar el cliente en la base de datos.");
+            setModalConf({
+                isOpen: true,
+                titulo: 'Error',
+                mensaje: 'Error al actualizar el cliente en la base de datos.',
+                soloAviso: true,
+                accion: () => setModalConf({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false })
+            });
         }
     };
 
@@ -272,12 +327,13 @@ export default function ListaClientes() {
                 )}
             </div>
 
+            {/* Custom ConfirmModal (Soporta confirmaciones y avisos de error/duplicados) */}
             <ConfirmModal
                 isOpen={modalConf.isOpen}
                 titulo={modalConf.titulo}
                 mensaje={modalConf.mensaje}
                 onConfirm={modalConf.accion}
-                onCancel={() => setModalConf({ isOpen: false, accion: null })}
+                onCancel={() => setModalConf({ isOpen: false, titulo: '', mensaje: '', accion: null, soloAviso: false })}
             />
         </div>
     );

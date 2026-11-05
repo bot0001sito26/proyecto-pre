@@ -124,7 +124,7 @@ export default function DashboardPrestamista() {
         <div className="min-h-screen bg-gray-50 pb-20 md:pb-8 overflow-x-hidden w-full font-sans">
             <div className="bg-white p-5 text-neutral-900 shadow-sm rounded-b-3xl mb-6 flex justify-between items-center border-b border-gray-100">
                 <div>
-                    <p className="text-[10px] text-amber-600 font-bold uppercase tracking-widest">Bienvenido a Anubis</p>
+                    <p className="text-[10px] text-amber-600 font-bold uppercase tracking-widest">Bienvenido</p>
                     <h1 className="text-2xl font-black truncate max-w-[220px] text-neutral-900">
                         {perfil?.nombre_negocio || 'Mi Negocio'}
                     </h1>
