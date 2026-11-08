@@ -36,8 +36,17 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         return new Date(d.getTime() - offset).toISOString().split('T')[0];
     }, []);
 
+
+
     const { id: prestamoId, fecha_inicio: fechaInicio, monto_total: montoTotal, monto_capital: montoCapital, cobrador, clientes, frecuencia, estado, prestamista_id } = prestamo || {};
     const [cobradorLocal, setCobradorLocal] = useState(cobrador || 'principal');
+
+    const capitalActualEnVivo = useMemo(() => {
+        const abonosTotales = movimientos
+            .filter(m => m.tipo === 'abono_capital')
+            .reduce((sum, m) => sum + parseFloat(m.monto), 0);
+        return Math.max(0, parseFloat(montoTotal || 0) - abonosTotales);
+    }, [movimientos, montoTotal]);
 
     // LÓGICAS DE FRECUENCIA
     const isFrecuenciaPorDias = frecuencia?.startsWith('dias_');
@@ -48,9 +57,10 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     const cortesPorMes = useMemo(() => {
         if (frecuencia === 'dias_7') return 4;
         if (frecuencia === 'dias_15') return 2;
-        if (isFrecuenciaPorDias) return 30 / (diasFrecuencia || 30);
+        // Si es personalizado (ej. 40 días), tratamos el bloque como 1 unidad completa (20% cerrado)
+        if (isPersonalizado) return 1;
         return 1;
-    }, [frecuencia, isFrecuenciaPorDias, diasFrecuencia]);
+    }, [frecuencia, isFrecuenciaPorDias, diasFrecuencia, isPersonalizado]);
 
     // ----------------------------------------------------
     // FUNCIONES ESTRICTAS EN UTC (SINCRONIZADAS)
@@ -100,50 +110,163 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     };
 
     const calculos = useMemo(() => {
-        if (!fechaInicio) return { cortes: 0, generado: 0, pagado: 0, ajustes: 0, pendiente: 0, proximoCorte: '', cronograma: [] };
+        if (!fechaInicio) return { cortes: 0, generado: 0, pagado: 0, ajustes: 0, pendiente: 0, proximoCorte: '', cronograma: [], mesesAgrupados: [] };
 
         const capitalOriginal = parseFloat(montoTotal);
-        const interesPorCorteFijo = (capitalOriginal * 0.20) / cortesPorMes;
 
         let generado = 0;
         let cortesTranscurridos = 0;
         let proximoCorteStr = '';
-        let cronograma = [];
+        let cronogramaPlano = []; // Lista plana para cálculos
+        let mesesAgrupados = [];  // Lista agrupada para la interfaz
+
+        // Determinamos el tamaño del "bloque" (1 mes para la regla de negocio)
+        const cortesParaRecalcular = Math.max(1, Math.round(cortesPorMes));
+
+        // Función que revisa el capital restante justo ANTES de iniciar un nuevo bloque
+        const obtenerCapitalEnFecha = (fechaInicioBloque) => {
+            // Buscamos todos los abonos a capital (usamos <= para incluir pagos hechos el mismo día de cierre de bloque)
+            const abonosHastaEsaFecha = movimientos
+                .filter(m => m.tipo === 'abono_capital' && m.fecha <= fechaInicioBloque)
+                .reduce((sum, m) => sum + parseFloat(m.monto), 0);
+            return Math.max(0, capitalOriginal - abonosHastaEsaFecha);
+        };
+
+        // Variables para llevar el control del bloque actual
+        let capitalDelBloqueActual = capitalOriginal;
+        let interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+        let fechaInicioMesLogico = fechaInicio;
+
+        // Variables para la agrupación visual
+        let mesActualIndex = 1;
+        let cortesDelMesActual = [];
+
+        // Función auxiliar para cerrar un mes y empaquetarlo
+        const empaquetarMes = (forzar = false) => {
+            if (cortesDelMesActual.length > 0 || forzar) {
+                mesesAgrupados.push({
+                    mesNumero: mesActualIndex,
+                    capitalBase: capitalDelBloqueActual,
+                    cortes: [...cortesDelMesActual]
+                });
+                mesActualIndex++;
+                cortesDelMesActual = [];
+            }
+        };
 
         if (isFrecuenciaPorDias) {
+            let iteracionCorte = 1;
             let fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia);
-            while (fechaCorteEfectiva <= hoyStr) {
-                generado += interesPorCorteFijo;
-                cortesTranscurridos++;
-                cronograma.push({ numero: cortesTranscurridos, fecha: fechaCorteEfectiva, estado: 'pasado' });
-                fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia * (cortesTranscurridos + 1));
-            }
-            proximoCorteStr = fechaCorteEfectiva;
-            cronograma.push({ numero: cortesTranscurridos + 1, fecha: proximoCorteStr, estado: 'proximo' });
-        } else {
-            let i = 1;
-            let fechaCorteEfectiva = sumarMesesPreservandoDia(fechaInicio, i);
 
             while (fechaCorteEfectiva <= hoyStr) {
-                generado += interesPorCorteFijo;
+                // Si arranca un nuevo bloque (ej. corte 5, 9, 13 en semanal)
+                if ((iteracionCorte - 1) % cortesParaRecalcular === 0) {
+                    if (iteracionCorte > 1) empaquetarMes(); // Empaquetamos el mes que acaba de terminar
+
+                    capitalDelBloqueActual = obtenerCapitalEnFecha(fechaInicioMesLogico);
+                    interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+                }
+
+                generado += interesEsteCorte;
                 cortesTranscurridos++;
-                cronograma.push({ numero: cortesTranscurridos, fecha: fechaCorteEfectiva, estado: 'pasado' });
-                i++;
-                fechaCorteEfectiva = sumarMesesPreservandoDia(fechaInicio, i);
+
+                const corteObj = {
+                    numeroGlobal: cortesTranscurridos,
+                    numeroLocal: cortesDelMesActual.length + 1, // 1, 2, 3 o 4
+                    fecha: fechaCorteEfectiva,
+                    estado: 'pasado',
+                    interesGenerado: interesEsteCorte
+                };
+
+                cronogramaPlano.push(corteObj);
+                cortesDelMesActual.push(corteObj);
+
+                // Si este es el ÚLTIMO corte del bloque actual, guardamos la fecha para el cálculo base del SIGUIENTE bloque
+                if (iteracionCorte % cortesParaRecalcular === 0) {
+                    fechaInicioMesLogico = fechaCorteEfectiva;
+                }
+
+                iteracionCorte++;
+                // AQUÍ ESTABA EL ERROR: se usaba cortesTranscurridos en vez de iteracionCorte
+                fechaCorteEfectiva = sumarDias(fechaInicio, diasFrecuencia * iteracionCorte);
             }
+
             proximoCorteStr = fechaCorteEfectiva;
-            cronograma.push({ numero: cortesTranscurridos + 1, fecha: proximoCorteStr, estado: 'proximo' });
+
+            // Evaluamos el próximo corte (el que aún no se cumple)
+            if ((iteracionCorte - 1) % cortesParaRecalcular === 0) {
+                if (iteracionCorte > 1) empaquetarMes();
+                capitalDelBloqueActual = obtenerCapitalEnFecha(fechaInicioMesLogico);
+                interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+            }
+
+            const proximoCorteObj = {
+                numeroGlobal: cortesTranscurridos + 1,
+                numeroLocal: cortesDelMesActual.length + 1,
+                fecha: proximoCorteStr,
+                estado: 'proximo',
+                interesGenerado: interesEsteCorte
+            };
+            cronogramaPlano.push(proximoCorteObj);
+            cortesDelMesActual.push(proximoCorteObj);
+            empaquetarMes(true); // Empaquetamos el último mes (el que está en curso)
+
+        } else {
+            // Lógica para Mensual Puro (Mes calendario)
+            let iteracionCorte = 1;
+            let fechaCorteEfectiva = sumarMesesPreservandoDia(fechaInicio, iteracionCorte);
+
+            while (fechaCorteEfectiva <= hoyStr) {
+                // En mensual, CADA corte es un bloque nuevo
+                capitalDelBloqueActual = obtenerCapitalEnFecha(fechaInicioMesLogico);
+                interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+
+                generado += interesEsteCorte;
+                cortesTranscurridos++;
+
+                const corteObj = {
+                    numeroGlobal: cortesTranscurridos,
+                    numeroLocal: 1,
+                    fecha: fechaCorteEfectiva,
+                    estado: 'pasado',
+                    interesGenerado: interesEsteCorte
+                };
+
+                cronogramaPlano.push(corteObj);
+                cortesDelMesActual.push(corteObj);
+                empaquetarMes();
+
+                fechaInicioMesLogico = fechaCorteEfectiva;
+                iteracionCorte++;
+                fechaCorteEfectiva = sumarMesesPreservandoDia(fechaInicio, iteracionCorte);
+            }
+
+            proximoCorteStr = fechaCorteEfectiva;
+
+            capitalDelBloqueActual = obtenerCapitalEnFecha(fechaInicioMesLogico);
+            interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+
+            const proximoCorteObj = {
+                numeroGlobal: cortesTranscurridos + 1,
+                numeroLocal: 1,
+                fecha: proximoCorteStr,
+                estado: 'proximo',
+                interesGenerado: interesEsteCorte
+            };
+            cronogramaPlano.push(proximoCorteObj);
+            cortesDelMesActual.push(proximoCorteObj);
+            empaquetarMes(true);
         }
 
         const pagado = movimientos.filter(m => m.tipo === 'pago_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
         const ajustes = movimientos.filter(m => m.tipo === 'ajuste_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
         const pendiente = generado - pagado - ajustes;
 
-        return { cortes: cortesTranscurridos, generado, pagado, ajustes, pendiente: Math.max(0, pendiente), proximoCorte: proximoCorteStr, cronograma };
+        return { cortes: cortesTranscurridos, generado, pagado, ajustes, pendiente: Math.max(0, pendiente), proximoCorte: proximoCorteStr, cronograma: cronogramaPlano, mesesAgrupados };
     }, [fechaInicio, montoTotal, hoyStr, isFrecuenciaPorDias, diasFrecuencia, cortesPorMes, movimientos]);
 
-    const interesSugeridoMensual = useMemo(() => (parseFloat(montoTotal || 0) * 0.20).toFixed(2), [montoTotal]);
-    const interesPorCorteSugerido = useMemo(() => (parseFloat(montoTotal || 0) * 0.20 / cortesPorMes).toFixed(2), [montoTotal, cortesPorMes]);
+    const interesSugeridoMensual = useMemo(() => (capitalActualEnVivo * 0.20).toFixed(2), [capitalActualEnVivo]);
+    const interesPorCorteSugerido = useMemo(() => (capitalActualEnVivo * 0.20 / cortesPorMes).toFixed(2), [capitalActualEnVivo, cortesPorMes]);
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
         setCobradorLocal(nuevoCobrador);
@@ -290,7 +413,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         }]);
 
         if (!error) {
-            if (tipoAccion === 'abono_capital') await supabase.from('prestamos').update({ monto_capital: Math.max(0, parseFloat(montoCapital) - monto) }).eq('id', prestamoId);
+            if (tipoAccion === 'abono_capital') await supabase.from('prestamos').update({ monto_capital: Math.max(0, capitalActualEnVivo - monto) }).eq('id', prestamoId);
             setMontoAccion(''); setNotaAccion(''); setTipoAccion(null); fetchMovimientos(); if (onUpdate) onUpdate();
         } else alert("Error al registrar el movimiento.");
     };
@@ -327,7 +450,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     const ejecutarLiquidacion = async (intCobrado) => {
         setModalConf({ isOpen: false, accion: null });
         setCargando(true);
-        const capPendiente = parseFloat(montoCapital) || 0;
+        const capPendiente = capitalActualEnVivo;
         const movs = [];
 
         if (capPendiente > 0) movs.push({ prestamo_id: prestamoId, fecha: hoyStr, tipo: 'abono_capital', monto: capPendiente, notas: 'Liquidación total del capital' });
@@ -477,7 +600,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 mt-2">
                                     <span className="w-24 text-neutral-400">Capital Actual:</span>
-                                    <span className="text-neutral-900 text-base font-black">${montoCapital}</span>
+                                    <span className="text-neutral-900 text-base font-black">${capitalActualEnVivo.toFixed(2)}</span>
                                 </div>
                                 <div className="flex border-b border-neutral-200 border-dashed pb-1 mb-1 text-amber-700">
                                     <span className="w-24 text-neutral-400 font-bold">Int. Mensual (20%):</span>
@@ -502,17 +625,31 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                 </div>
                             </div>
 
-                            {calculos.cronograma && calculos.cronograma.length > 0 && (
-                                <div className="mb-4 bg-white border border-gray-200 rounded-lg p-2 max-h-32 overflow-y-auto shadow-inner">
-                                    <span className="block text-[9px] font-black uppercase text-gray-400 mb-2 sticky top-0 bg-white pb-1">Cronograma de Cortes</span>
-                                    <div className="space-y-1">
-                                        {calculos.cronograma.map(c => (
-                                            <div key={c.numero} className={`flex justify-between items-center p-1.5 rounded text-[10px] uppercase font-black tracking-wider ${c.estado === 'proximo' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'text-gray-500'}`}>
-                                                <span>Corte #{c.numero}</span>
-                                                <span className="flex items-center gap-1">
-                                                    {c.fecha}
-                                                    {c.estado === 'proximo' ? <span className="text-amber-600">(Próximo)</span> : <span className="text-green-500">✓</span>}
-                                                </span>
+                            {calculos.mesesAgrupados && calculos.mesesAgrupados.length > 0 && (
+                                <div className="mb-4 bg-white border border-gray-200 rounded-lg p-2 max-h-48 overflow-y-auto shadow-inner">
+                                    <span className="block text-[9px] font-black uppercase text-gray-400 mb-2 sticky top-0 bg-white pb-1 z-10">Cronograma de Cortes</span>
+                                    <div className="space-y-3">
+                                        {calculos.mesesAgrupados.map(mes => (
+                                            <div key={mes.mesNumero} className="border border-amber-100 rounded-md overflow-hidden">
+                                                <div className="bg-amber-50 px-2 py-1.5 flex justify-between items-center border-b border-amber-100">
+                                                    <span className="text-[10px] font-black uppercase text-amber-800">Mes {mes.mesNumero}</span>
+                                                    <div className="flex gap-3 text-[9px] font-bold text-amber-600">
+                                                        <span>Base: ${mes.capitalBase.toFixed(2)}</span>
+                                                        <span>Int: ${(mes.capitalBase * 0.20).toFixed(2)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-white">
+                                                    {mes.cortes.map(c => (
+                                                        <div key={c.numeroGlobal} className={`flex justify-between items-center px-2 py-1.5 text-[10px] uppercase font-black tracking-wider border-b last:border-b-0 border-gray-50 ${c.estado === 'proximo' ? 'bg-amber-100/50 text-amber-900' : 'text-gray-500'}`}>
+                                                            <span>Corte #{c.numeroLocal} <span className="text-[8px] text-gray-400 normal-case">(Global #{c.numeroGlobal})</span></span>
+                                                            <span className="flex items-center gap-2">
+
+                                                                <span>{c.fecha}</span>
+                                                                {c.estado === 'proximo' ? <span className="text-amber-600">(Próximo)</span> : <span className="text-green-500">✓</span>}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         ))}
                                     </div>

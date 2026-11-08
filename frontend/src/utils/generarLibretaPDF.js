@@ -72,17 +72,60 @@ export const generarLibretaPDF = (prestamo, movimientos, calculos) => {
         doc.text(`Interés Pendiente de Pago: $0.00`, 110, 71);
     }
 
-    // Tabla de Movimientos
-    const startYTabla = calculos.ajustes !== 0 ? 90 : 85;
+    // ---------------------------------------------------------
+    // NUEVA SECCIÓN: CRONOGRAMA DE CORTES (Muestra el capital base)
+    // ---------------------------------------------------------
+    let currentY = calculos.ajustes !== 0 ? 90 : 85;
 
     doc.setFontSize(10);
     doc.setTextColor(50, 50, 50);
-    doc.text("Historial de Movimientos:", 14, startYTabla - 3);
+    doc.text("Desglose de Interés Generado (Cronograma):", 14, currentY);
+
+    const cronoColumns = ["Bloque / Mes", "Corte #", "Fecha", "Capital Base", "Int. Generado", "Estado"];
+    const cronoRows = [];
+
+    if (calculos.mesesAgrupados && calculos.mesesAgrupados.length > 0) {
+        calculos.mesesAgrupados.forEach((mes) => {
+            mes.cortes.forEach((c) => {
+                cronoRows.push([
+                    `Mes ${mes.mesNumero}`,
+                    `${c.numeroLocal} (G. ${c.numeroGlobal})`,
+                    c.fecha,
+                    `$${mes.capitalBase.toFixed(2)}`,
+                    `$${c.interesGenerado.toFixed(2)}`,
+                    c.estado === 'proximo' ? 'Próximo' : 'Generado'
+                ]);
+            });
+        });
+    }
+
+    autoTable(doc, {
+        startY: currentY + 4,
+        head: [cronoColumns],
+        body: cronoRows,
+        theme: 'grid',
+        headStyles: { fillColor: [55, 65, 81], textColor: [255, 255, 255], fontStyle: 'bold' }, // Gris oscuro
+        styles: { fontSize: 8, cellPadding: 2.5 },
+        alternateRowStyles: { fillColor: [249, 250, 251] },
+        columnStyles: {
+            3: { fontStyle: 'bold', textColor: [22, 163, 74] }, // Verde para el capital base
+            4: { fontStyle: 'bold', textColor: [217, 119, 6] }  // Ámbar para el interés
+        }
+    });
+
+    // Actualizamos la posición Y basándonos en dónde terminó la tabla anterior
+    currentY = doc.lastAutoTable.finalY + 12;
+
+    // ---------------------------------------------------------
+    // TABLA DE MOVIMIENTOS
+    // ---------------------------------------------------------
+    doc.setFontSize(10);
+    doc.setTextColor(50, 50, 50);
+    doc.text("Historial de Movimientos (Pagos y Abonos):", 14, currentY);
 
     const tableColumn = ["Fecha", "Tipo de Movimiento", "Monto ($)", "Notas"];
     const tableRows = [];
 
-    // Mapeamos los movimientos para que sean legibles en el PDF
     const formatTipo = (tipo) => {
         switch (tipo) {
             case 'corte_mes': return 'Inicio / Corte';
@@ -107,17 +150,17 @@ export const generarLibretaPDF = (prestamo, movimientos, calculos) => {
     }
 
     autoTable(doc, {
-        startY: startYTabla,
+        startY: currentY + 4,
         head: [tableColumn],
         body: tableRows,
         theme: 'grid',
         headStyles: { fillColor: [245, 158, 11], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 9, cellPadding: 3 },
+        styles: { fontSize: 8, cellPadding: 3 },
         alternateRowStyles: { fillColor: [250, 250, 250] },
         columnStyles: {
-            0: { cellWidth: 25 },
-            1: { cellWidth: 35 },
-            2: { cellWidth: 25, fontStyle: 'bold' },
+            0: { cellWidth: 22 },
+            1: { cellWidth: 32 },
+            2: { cellWidth: 22, fontStyle: 'bold' },
             3: { cellWidth: 'auto' }
         },
         didParseCell: function (data) {
