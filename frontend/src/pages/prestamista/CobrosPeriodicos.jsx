@@ -38,7 +38,10 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
             <div onClick={() => mult ? setExpandido(!expandido) : undefined} className={`p-4 flex justify-between items-center ${mult ? 'cursor-pointer hover:bg-gray-50' : ''}`}>
                 <div>
                     <div className="flex items-center gap-2">
-                        <h2 className="font-bold text-gray-800 text-lg">{grupo.clientes.nombre}</h2>
+                        {/* NUEVO: Cambio de color si el grupo tiene algún capital ajeno */}
+                        <h2 className={`font-bold text-lg ${grupo.tieneCapitalAjeno ? 'text-purple-800' : 'text-gray-800'}`}>
+                            {grupo.clientes.nombre}
+                        </h2>
                         {mult && (
                             <span className="bg-amber-100 text-amber-800 text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider border border-amber-200">
                                 {grupo.prestamosAgrupados.length} Créditos
@@ -62,7 +65,7 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
                     </div>
 
                     {!mult && (
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap mt-2">
                             {pPrincipal.tipo_prestamo === 'mensual_interes' && (
                                 <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded border ${pPrincipal.frecuencia.startsWith('dias_') ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-purple-100 text-purple-800 border-purple-200'}`}>
                                     {pPrincipal.frecuencia.startsWith('dias_') ? `Interés (${pPrincipal.frecuencia.split('_')[1]} Días)` : 'Interés Abierto'}
@@ -70,6 +73,12 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
                             )}
                             {pPrincipal.cobrador === 'ayudante' && (
                                 <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">Ayudante</span>
+                            )}
+                            {/* NUEVO: Badge [ A ] para Capital Ajeno (Cuando es préstamo único) */}
+                            {pPrincipal.es_capital_ajeno && (
+                                <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-purple-100 text-purple-700 border border-purple-200 shadow-sm">
+                                    A
+                                </span>
                             )}
                         </div>
                     )}
@@ -93,7 +102,15 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
                     {grupo.prestamosAgrupados.map((subP) => (
                         <div key={subP.id} className="py-3 flex justify-between items-center first:pt-1 last:pb-1">
                             <div>
-                                <p className="font-black text-gray-800 text-sm">Capital: ${subP.monto_capital}</p>
+                                <p className="font-black text-gray-800 text-sm flex items-center gap-2">
+                                    Capital: ${subP.monto_capital}
+                                    {/* NUEVO: Badge [ A ] para Capital Ajeno (Dentro del acordeón múltiple) */}
+                                    {subP.es_capital_ajeno && (
+                                        <span className="text-[8px] font-black uppercase bg-purple-100 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded shadow-sm">
+                                            A
+                                        </span>
+                                    )}
+                                </p>
                                 <p className="text-[11px] font-bold text-amber-600 mb-1">
                                     Cuota/Int: ${subP.tipo_prestamo === 'mensual_interes' ? (parseFloat(subP.monto_total) * 0.20).toFixed(2) : subP.valor_cuota}
                                 </p>
@@ -136,10 +153,11 @@ export default function CobrosPeriodicos() {
     const fetchPrestamosPeriodicos = async () => {
         setCargando(true);
 
+        // NUEVO: Añadido es_capital_ajeno en el .select()
         let query = supabase
             .from('prestamos')
             .select(`
-                id, monto_total, monto_capital, frecuencia, fecha_inicio, estado, valor_cuota, cobrador, tipo_prestamo,
+                id, monto_total, monto_capital, frecuencia, fecha_inicio, estado, valor_cuota, cobrador, tipo_prestamo, es_capital_ajeno,
                 clientes ( id, nombre, telefono ),
                 historial_pagos ( id, fecha_cobro, estado_cobro, monto_recibido ),
                 movimientos_mensuales ( tipo, monto, fecha )
@@ -261,7 +279,8 @@ export default function CobrosPeriodicos() {
                     prestamosAgrupados: [p],
                     montoTotalSuma: parseFloat(p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20) : p.valor_cuota),
                     atrasadoAlguna: p.atrasado,
-                    mensajesAtraso: p.mensajeAtraso ? [p.mensajeAtraso] : []
+                    mensajesAtraso: p.mensajeAtraso ? [p.mensajeAtraso] : [],
+                    tieneCapitalAjeno: p.es_capital_ajeno // NUEVO: Evaluando el primer préstamo
                 };
             } else {
                 const item = agrupadosPorCliente[clienteId];
@@ -274,6 +293,12 @@ export default function CobrosPeriodicos() {
                         item.mensajesAtraso.push(p.mensajeAtraso);
                     }
                 }
+
+                // NUEVO: Si algún otro préstamo del grupo es ajeno, marcamos todo el grupo como tal
+                if (p.es_capital_ajeno) {
+                    item.tieneCapitalAjeno = true;
+                }
+
                 // Conservar la fecha de vencimiento más antigua/próxima
                 if (p.fechaVencimiento.localeCompare(item.fechaVencimiento) < 0) {
                     item.fechaVencimiento = p.fechaVencimiento;

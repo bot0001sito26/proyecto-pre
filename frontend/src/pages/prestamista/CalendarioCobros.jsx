@@ -20,8 +20,8 @@ export default function CalendarioCobros() {
 
     const [clientesAgrupados, setClientesAgrupados] = useState(() => {
         try {
-            // Actualizado a v7 para limpiar caché y que aparezcan las horas
-            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v7'));
+            // Actualizado a v8 para forzar recarga y traer el nuevo campo
+            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v8'));
             if (cache && cache.fecha === hoyStr) return cache.datos;
             return [];
         } catch { return []; }
@@ -37,12 +37,13 @@ export default function CalendarioCobros() {
     const fetchPagos = async () => {
         if (clientesAgrupados.length === 0) setCargando(true);
 
+        // NUEVO: Añadido es_capital_ajeno en la consulta
         const { data, error } = await supabase
             .from('historial_pagos')
             .select(`
                 id, fecha_cobro, estado_cobro, monto_recibido, notas, fecha_pago_real, fecha_registro,
                 prestamos!inner (
-                    id, valor_cuota, prestamista_id, estado, monto_total, monto_capital, frecuencia, fecha_inicio, cobrador, tipo_prestamo, 
+                    id, valor_cuota, prestamista_id, estado, monto_total, monto_capital, frecuencia, fecha_inicio, cobrador, tipo_prestamo, es_capital_ajeno,
                     clientes ( id, nombre, telefono )
                 )
             `)
@@ -96,12 +97,10 @@ export default function CalendarioCobros() {
                         const fechaObj = new Date(cuota.fecha_registro);
                         const horaCuota = fechaObj.getTime();
 
-                        // Guardar la hora máxima para ordenar al cliente general
                         if (!mapaClientes[cId].ultimaHoraPago || horaCuota > mapaClientes[cId].ultimaHoraPago) {
                             mapaClientes[cId].ultimaHoraPago = horaCuota;
                         }
 
-                        // Guardar la hora formateada para mostrarla en la UI del préstamo
                         if (horaCuota > itemPrestamo.horaPagoMs) {
                             itemPrestamo.horaPagoMs = horaCuota;
                             itemPrestamo.horaFormateada = fechaObj.toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit', hour12: true });
@@ -125,16 +124,20 @@ export default function CalendarioCobros() {
                 else if (estados.every(e => e === 'pagado')) estadoGlobal = 'pagado';
                 else if (estados.every(e => e === 'al_dia' || e === 'pagado')) estadoGlobal = 'al_dia';
 
+                // Determinar si este cliente tiene algún préstamo ajeno en la ruta de hoy
+                const tieneCapitalAjeno = prestamosDelCliente.some(p => p.prestamoInfo.es_capital_ajeno);
+
                 return {
                     cliente: clienteData.cliente,
                     listaPrestamos: prestamosDelCliente,
                     estadoGlobal: estadoGlobal,
-                    ultimaHoraPago: clienteData.ultimaHoraPago
+                    ultimaHoraPago: clienteData.ultimaHoraPago,
+                    tieneCapitalAjeno: tieneCapitalAjeno
                 };
             });
 
             setClientesAgrupados(arrayClientes);
-            sessionStorage.setItem('anubis_ruta_diaria_v7', JSON.stringify({ fecha: fecha, datos: arrayClientes }));
+            sessionStorage.setItem('anubis_ruta_diaria_v8', JSON.stringify({ fecha: fecha, datos: arrayClientes }));
         }
         setCargando(false);
     };
@@ -149,15 +152,12 @@ export default function CalendarioCobros() {
             const pesoA = orden[a.estadoGlobal] || 2;
             const pesoB = orden[b.estadoGlobal] || 2;
 
-            // 1. Agrupar por estado (Pendientes arriba, Pagados abajo)
             if (pesoA !== pesoB) return pesoA - pesoB;
 
-            // 2. Orden Cronológico para los pagados (el último que pagó se pone arriba del bloque de pagados)
             if (pesoA === 4 && a.ultimaHoraPago && b.ultimaHoraPago) {
                 return b.ultimaHoraPago - a.ultimaHoraPago;
             }
 
-            // 3. Orden alfabético
             return a.cliente.nombre.localeCompare(b.cliente.nombre);
         });
     }, [clientesAgrupados, cobradorActivo]);
@@ -200,7 +200,8 @@ export default function CalendarioCobros() {
             cliente_id: pInfo.clientes.id,
             clientes: pInfo.clientes,
             cobrador: pInfo.cobrador,
-            tipo_prestamo: pInfo.tipo_prestamo
+            tipo_prestamo: pInfo.tipo_prestamo,
+            es_capital_ajeno: pInfo.es_capital_ajeno
         };
         setPrestamoSeleccionado(prestamoFormateado);
     };
@@ -278,7 +279,10 @@ export default function CalendarioCobros() {
                                 }`}>
                                 <div className="flex justify-between items-start mb-3">
                                     <div>
-                                        <h2 className="font-bold text-gray-800 text-lg leading-tight">{item.cliente.nombre}</h2>
+                                        {/* NUEVO: Cambio de color del nombre si tiene capital ajeno */}
+                                        <h2 className={`font-bold text-lg leading-tight ${item.tieneCapitalAjeno ? 'text-purple-800' : 'text-gray-800'}`}>
+                                            {item.cliente.nombre}
+                                        </h2>
                                         <p className="text-[11px] font-bold text-gray-400 flex items-center gap-1 mt-1">
                                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
                                             {item.cliente.telefono || 'Sin número'}
@@ -303,6 +307,10 @@ export default function CalendarioCobros() {
                                                     </span>
                                                     {p.prestamoInfo.cobrador === 'ayudante' && (
                                                         <span className="text-[8px] font-black uppercase bg-neutral-200 text-neutral-600 px-1.5 py-0.5 rounded">Ayud.</span>
+                                                    )}
+                                                    {/* NUEVO: Badge de préstamo ajeno a nivel de préstamo individual */}
+                                                    {p.prestamoInfo.es_capital_ajeno && (
+                                                        <span className="text-[8px] font-black uppercase bg-purple-100 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded shadow-sm">A</span>
                                                     )}
                                                 </div>
                                             </div>

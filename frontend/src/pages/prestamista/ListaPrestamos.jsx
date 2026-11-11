@@ -64,7 +64,7 @@ export default function ListaPrestamos() {
             .from('prestamos')
             .select(`
                 id, monto_capital, interes_total, monto_total, saldo_pendiente, 
-                frecuencia, valor_cuota, fecha_inicio, estado, cliente_id, tipo_prestamo, cobrador,
+                frecuencia, valor_cuota, fecha_inicio, estado, cliente_id, tipo_prestamo, cobrador, es_capital_ajeno,
                 clientes ( id, nombre, telefono )
             `)
             .eq('prestamista_id', user.id)
@@ -72,7 +72,7 @@ export default function ListaPrestamos() {
 
         const { data: dataPagos } = await supabase
             .from('historial_pagos')
-            .select(`monto_recibido, estado_cobro, prestamos!inner ( id, interes_total, monto_total, prestamista_id, estado )`)
+            .select(`monto_recibido, estado_cobro, prestamos!inner ( id, interes_total, monto_total, prestamista_id, estado, es_capital_ajeno )`)
             .eq('prestamos.prestamista_id', user.id)
             .in('estado_cobro', ['pagado', 'renovado'])
             .gte('fecha_cobro', fechaDesde)
@@ -80,7 +80,7 @@ export default function ListaPrestamos() {
 
         const { data: dataMovimientos } = await supabase
             .from('movimientos_mensuales')
-            .select(`monto, prestamos!inner ( prestamista_id )`)
+            .select(`monto, prestamos!inner ( prestamista_id, es_capital_ajeno )`)
             .eq('prestamos.prestamista_id', user.id)
             .eq('tipo', 'pago_interes')
             .gte('fecha', fechaDesde)
@@ -110,7 +110,9 @@ export default function ListaPrestamos() {
     }, [prestamos]);
 
     const capitalActivoTotal = useMemo(() => {
-        return todosLosActivos.reduce((sum, p) => sum + Number(p.monto_capital), 0);
+        return todosLosActivos
+            .filter(p => !p.es_capital_ajeno) // Filtro: Solo dinero propio
+            .reduce((sum, p) => sum + Number(p.monto_capital), 0);
     }, [todosLosActivos]);
 
     const interesGanadoRango = useMemo(() => {
@@ -120,7 +122,7 @@ export default function ListaPrestamos() {
         pagosRango.forEach(pago => {
             const prestamo = pago.prestamos;
             if (prestamo.estado === 'completado' || prestamo.estado === 'renovado') {
-                if (!prestamosContabilizados.has(prestamo.id)) {
+                if (!prestamo.es_capital_ajeno && !prestamosContabilizados.has(prestamo.id)) { // Filtro
                     prestamosContabilizados.add(prestamo.id);
                     ganancia += Number(prestamo.interes_total);
                 }
@@ -128,7 +130,9 @@ export default function ListaPrestamos() {
         });
 
         movimientosRango.forEach(mov => {
-            ganancia += Number(mov.monto);
+            if (!mov.prestamos.es_capital_ajeno) { // Filtro
+                ganancia += Number(mov.monto);
+            }
         });
 
         return ganancia;
@@ -205,28 +209,23 @@ export default function ListaPrestamos() {
                             <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 text-sm font-bold text-gray-800 outline-none focus:border-amber-500 transition" />
                         </div>
 
-                        {/* BOTONES DE DESCARGA */}
                         <div className="flex flex-wrap w-full md:w-auto gap-2">
-                            {/* Cartera: Icono de carpeta/portafolio minimalista */}
-                            <button onClick={() => generarReporteCarteraPDF(prestamosEnRango, fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Préstamos creados en estas fechas">
+                            <button onClick={() => generarReporteCarteraPDF(prestamosEnRango.filter(p => !p.es_capital_ajeno), fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Préstamos creados en estas fechas (Sin Ajeno)">
                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
                                 Cartera
                             </button>
 
-                            {/* Caja: Icono de billetera / flujo de efectivo */}
                             <button onClick={() => generarReporteCajaPDF(fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Todo el dinero físico ingresado">
                                 <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
                                 Caja
                             </button>
 
-                            {/* Ganancia: Icono de tendencia al alza / finanzas */}
                             <button onClick={() => generarReporteGananciasPDF(fechaDesde, fechaHasta)} className="flex-1 md:flex-none bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Solo el interés neto ganado">
                                 <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                 Ganancia
                             </button>
 
-                            {/* Activos: Icono de capas / base de datos o registros activos */}
-                            <button onClick={() => generarReporteCarteraPDF(todosLosActivos, 'INICIO', 'ACTUALIDAD')} className="flex-1 md:flex-none bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Préstamos activos globales">
+                            <button onClick={() => generarReporteCarteraPDF(todosLosActivos.filter(p => !p.es_capital_ajeno), 'INICIO', 'ACTUALIDAD')} className="flex-1 md:flex-none bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-1.5 h-[46px] text-[11px]" title="Préstamos activos globales (Sin Ajeno)">
                                 <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
                                 Activos
                             </button>

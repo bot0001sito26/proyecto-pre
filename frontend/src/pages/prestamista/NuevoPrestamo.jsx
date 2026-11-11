@@ -22,6 +22,7 @@ export default function NuevoPrestamo() {
     const [numeroCuotas, setNumeroCuotas] = useState(30);
     const [diasPersonalizados, setDiasPersonalizados] = useState('');
     const [cobrador, setCobrador] = useState('principal');
+    const [esCapitalAjeno, setEsCapitalAjeno] = useState(false); // NUEVO: Estado para dinero de terceros
 
     const hoyEstandar = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const [fechaInicio, setFechaInicio] = useState(hoyEstandar);
@@ -113,7 +114,8 @@ export default function NuevoPrestamo() {
                 valor_cuota: valorCuota,
                 fecha_inicio: fechaInicio,
                 cobrador,
-                tipo_prestamo: tipoPrestamo
+                tipo_prestamo: tipoPrestamo,
+                es_capital_ajeno: esCapitalAjeno // NUEVO: Se guarda en Supabase
             }]).select().single();
 
         if (!errorPrestamo && prestamo) {
@@ -173,7 +175,7 @@ export default function NuevoPrestamo() {
             }
             navigate('/dashboard');
         } else {
-            alert("Error al crear préstamo");
+            alert("Error al crear préstamo: " + (errorPrestamo ? errorPrestamo.message : "Error desconocido"));
         }
         setGuardando(false);
     };
@@ -251,6 +253,22 @@ export default function NuevoPrestamo() {
                                     <input type="number" step="0.01" min="0" value={interes} onChange={(e) => setInteres(e.target.value)} className="w-full border border-gray-200 rounded-xl p-3 bg-gray-50 outline-none focus:border-amber-500 font-bold text-gray-800 transition text-center" required placeholder="Ej. 20" />
                                 </div>
                             )}
+                        </div>
+
+                        {/* NUEVO: Interruptor de Capital Ajeno */}
+                        <div className="bg-purple-50/50 border border-purple-100 p-4 rounded-xl flex items-center justify-between gap-4">
+                            <div>
+                                <h3 className="text-[11px] font-black text-purple-900 uppercase tracking-widest">Terceros</h3>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                                <input
+                                    type="checkbox"
+                                    className="sr-only peer"
+                                    checked={esCapitalAjeno}
+                                    onChange={(e) => setEsCapitalAjeno(e.target.checked)}
+                                />
+                                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                            </label>
                         </div>
 
                         <div className="bg-gray-50/50 border border-gray-100 p-3 rounded-xl space-y-3">

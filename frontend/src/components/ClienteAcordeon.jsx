@@ -39,9 +39,18 @@ export default function ClienteAcordeon({ cliente, setPrestamoSeleccionado }) {
                                     <div key={p.id} className="py-3 first:pt-0 last:pb-0">
                                         <div className="flex justify-between items-start mb-2">
                                             <div>
-                                                <p className="font-black text-gray-800 text-sm">Capital: ${p.monto_capital}</p>
+                                                <p className="font-black text-gray-800 text-sm flex items-center gap-2">
+                                                    Capital: ${p.monto_capital}
+                                                    {p.es_capital_ajeno && (
+                                                        <span className="bg-purple-100 text-purple-700 text-[8px] px-1.5 py-0.5 rounded border border-purple-200 uppercase tracking-widest shadow-sm">Capital A</span>
+                                                    )}
+                                                </p>
                                                 <p className="text-[11px] font-bold text-amber-600 mb-1">A cobrar: ${p.monto_total}</p>
-                                                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">{p.frecuencia} • Inició: {p.fecha_inicio}</p>
+                                                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                                                    <span>{p.frecuencia}</span>
+                                                    <span className="text-gray-300">•</span>
+                                                    <span>Inició: {p.fecha_inicio}</span>
+                                                </p>
                                             </div>
                                             <button onClick={() => setPrestamoSeleccionado(p)} className="bg-white text-amber-600 text-[10px] font-black px-3 py-2 rounded-lg hover:bg-amber-50 transition uppercase tracking-widest border border-amber-200 shadow-sm">
                                                 Cartulina
@@ -64,8 +73,17 @@ export default function ClienteAcordeon({ cliente, setPrestamoSeleccionado }) {
                                     <div key={p.id} className="py-2 opacity-75 grayscale hover:grayscale-0 transition">
                                         <div className="flex justify-between items-center">
                                             <div>
-                                                <p className="font-bold text-gray-600 text-sm">Capital: ${p.monto_capital}</p>
-                                                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Inició: {p.fecha_inicio} • {p.estado}</p>
+                                                <p className="font-bold text-gray-600 text-sm flex items-center gap-2">
+                                                    Capital: ${p.monto_capital}
+                                                    {p.es_capital_ajeno && (
+                                                        <span className="bg-purple-100 text-purple-700 text-[8px] px-1.5 py-0.5 rounded border border-purple-200 uppercase tracking-widest">Ajeno</span>
+                                                    )}
+                                                </p>
+                                                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                                    <span>Inició: {p.fecha_inicio}</span>
+                                                    <span className="text-gray-300">•</span>
+                                                    <span>{p.estado}</span>
+                                                </p>
                                             </div>
                                             <button onClick={() => setPrestamoSeleccionado(p)} className="bg-white text-gray-500 text-[10px] font-bold px-3 py-1.5 rounded-md uppercase tracking-wider hover:bg-gray-100 border border-gray-200">
                                                 Ver
