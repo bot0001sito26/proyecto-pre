@@ -38,7 +38,6 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
             <div onClick={() => mult ? setExpandido(!expandido) : undefined} className={`p-4 flex justify-between items-center ${mult ? 'cursor-pointer hover:bg-gray-50' : ''}`}>
                 <div>
                     <div className="flex items-center gap-2">
-                        {/* NUEVO: Cambio de color si el grupo tiene algún capital ajeno */}
                         <h2 className={`font-bold text-lg ${grupo.tieneCapitalAjeno ? 'text-purple-800' : 'text-gray-800'}`}>
                             {grupo.clientes.nombre}
                         </h2>
@@ -74,7 +73,6 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
                             {pPrincipal.cobrador === 'ayudante' && (
                                 <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-neutral-100 text-neutral-500 border border-neutral-200">Ayudante</span>
                             )}
-                            {/* NUEVO: Badge [ A ] para Capital Ajeno (Cuando es préstamo único) */}
                             {pPrincipal.es_capital_ajeno && (
                                 <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded bg-purple-100 text-purple-700 border border-purple-200 shadow-sm">
                                     A
@@ -103,8 +101,7 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
                         <div key={subP.id} className="py-3 flex justify-between items-center first:pt-1 last:pb-1">
                             <div>
                                 <p className="font-black text-gray-800 text-sm flex items-center gap-2">
-                                    Capital: ${subP.monto_capital}
-                                    {/* NUEVO: Badge [ A ] para Capital Ajeno (Dentro del acordeón múltiple) */}
+                                    Capital: ${subP.tipo_prestamo === 'mensual_interes' ? subP.capitalActivo.toFixed(2) : subP.monto_capital}
                                     {subP.es_capital_ajeno && (
                                         <span className="text-[8px] font-black uppercase bg-purple-100 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded shadow-sm">
                                             A
@@ -112,7 +109,9 @@ function PrestamoGrupoAcordeon({ grupo, abrirModal }) {
                                     )}
                                 </p>
                                 <p className="text-[11px] font-bold text-amber-600 mb-1">
-                                    Cuota/Int: ${subP.tipo_prestamo === 'mensual_interes' ? (parseFloat(subP.monto_total) * 0.20).toFixed(2) : subP.valor_cuota}
+                                    {subP.tipo_prestamo === 'mensual_interes'
+                                        ? `Int. Ciclo: $${subP.interesCicloFijo.toFixed(2)}`
+                                        : `Cuota: $${subP.valor_cuota}`}
                                 </p>
                                 <p className={`text-[9px] font-bold uppercase tracking-wider ${subP.atrasado ? 'text-red-500' : 'text-gray-500'}`}>
                                     {subP.tipo_prestamo === 'mensual_interes' ? (subP.frecuencia.startsWith('dias_') ? `Int. (${subP.frecuencia.split('_')[1]} Días)` : 'Interés Abierto') : 'Cuota Fija'} • Corte: {subP.fechaVencimiento}
@@ -153,7 +152,6 @@ export default function CobrosPeriodicos() {
     const fetchPrestamosPeriodicos = async () => {
         setCargando(true);
 
-        // NUEVO: Añadido es_capital_ajeno en el .select()
         let query = supabase
             .from('prestamos')
             .select(`
@@ -177,60 +175,89 @@ export default function CobrosPeriodicos() {
                 let fechaVencimiento = 'Sin fecha';
                 let atrasado = false;
                 let mensajeAtraso = '';
+                let capitalActivo = parseFloat(p.monto_total);
+                // Interés fijo basado en el monto original del ciclo (no varía con abonos parciales)
+                const interesCicloFijo = parseFloat(p.monto_total) * 0.20;
 
                 if (p.tipo_prestamo === 'mensual_interes') {
+                    const isFrecuenciaPorDias = p.frecuencia?.startsWith('dias_');
+                    const diasFrecuencia = isFrecuenciaPorDias ? parseInt(p.frecuencia.split('_')[1], 10) : 30;
+                    const isPersonalizado = isFrecuenciaPorDias && p.frecuencia !== 'dias_7' && p.frecuencia !== 'dias_15';
+
                     let cortesPorMes = 1;
                     if (p.frecuencia === 'dias_7') cortesPorMes = 4;
                     else if (p.frecuencia === 'dias_15') cortesPorMes = 2;
-                    else if (p.frecuencia.startsWith('dias_')) cortesPorMes = 30 / parseInt(p.frecuencia.split('_')[1]);
+                    else if (isPersonalizado) cortesPorMes = 1;
 
+                    const cortesParaRecalcular = Math.max(1, Math.round(cortesPorMes));
                     const capitalOriginal = parseFloat(p.monto_total);
-                    const interesPorCorteFijo = (capitalOriginal * 0.20) / cortesPorMes;
+                    const movimientos = p.movimientos_mensuales || [];
 
-                    const pagado = (p.movimientos_mensuales || []).filter(m => m.tipo === 'pago_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
-                    const ajustes = (p.movimientos_mensuales || []).filter(m => m.tipo === 'ajuste_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
+                    const obtenerCapitalEnFecha = (fechaInicioBloque) => {
+                        const abonosHastaEsaFecha = movimientos
+                            .filter(m => m.tipo === 'abono_capital' && m.fecha <= fechaInicioBloque)
+                            .reduce((sum, m) => sum + parseFloat(m.monto), 0);
+                        return Math.max(0, capitalOriginal - abonosHastaEsaFecha);
+                    };
 
-                    if (p.frecuencia.startsWith('dias_')) {
-                        const diasFrecuencia = parseInt(p.frecuencia.split('_')[1]);
-                        let generado = 0;
-                        let cortesTranscurridos = 0;
+                    const abonosTotales = movimientos
+                        .filter(m => m.tipo === 'abono_capital')
+                        .reduce((sum, m) => sum + parseFloat(m.monto), 0);
+
+                    capitalActivo = Math.max(0, capitalOriginal - abonosTotales);
+
+                    const pagado = movimientos.filter(m => m.tipo === 'pago_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
+                    const ajustes = movimientos.filter(m => m.tipo === 'ajuste_interes').reduce((sum, m) => sum + parseFloat(m.monto), 0);
+
+                    let generado = 0;
+                    let fechaInicioMesLogico = p.fecha_inicio;
+                    let capitalDelBloqueActual = capitalOriginal;
+                    let interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+
+                    // El corte se hace efectivo a medianoche (cuando fechaCorteEfectiva < hoyStr)
+                    if (isFrecuenciaPorDias) {
+                        let iteracionCorte = 1;
                         let fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia);
 
-                        while (fechaCorteEfectiva <= hoyStr) {
-                            generado += interesPorCorteFijo;
-                            cortesTranscurridos++;
-                            fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia * (cortesTranscurridos + 1));
+                        while (fechaCorteEfectiva < hoyStr) {
+                            if ((iteracionCorte - 1) % cortesParaRecalcular === 0) {
+                                capitalDelBloqueActual = obtenerCapitalEnFecha(fechaInicioMesLogico);
+                                interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+                            }
+
+                            generado += interesEsteCorte;
+
+                            if (iteracionCorte % cortesParaRecalcular === 0) {
+                                fechaInicioMesLogico = fechaCorteEfectiva;
+                            }
+
+                            iteracionCorte++;
+                            fechaCorteEfectiva = sumarDias(p.fecha_inicio, diasFrecuencia * iteracionCorte);
                         }
 
-                        const pendiente = generado - pagado - ajustes;
                         fechaVencimiento = fechaCorteEfectiva;
-
-                        if (pendiente > 0.01) {
-                            atrasado = true;
-                            mensajeAtraso = `Deuda: $${pendiente.toFixed(2)}`;
-                        }
-
                     } else {
-                        // LÓGICA MENSUAL SINCRONIZADA ESTRICTA EN UTC
-                        let i = 1;
-                        let generado = 0;
-                        let cortesTranscurridos = 0;
-                        let fechaCorteEfectiva = sumarMesesPreservandoDia(p.fecha_inicio, i);
+                        let iteracionCorte = 1;
+                        let fechaCorteEfectiva = sumarMesesPreservandoDia(p.fecha_inicio, iteracionCorte);
 
-                        while (fechaCorteEfectiva <= hoyStr) {
-                            generado += interesPorCorteFijo;
-                            cortesTranscurridos++;
-                            i++;
-                            fechaCorteEfectiva = sumarMesesPreservandoDia(p.fecha_inicio, i);
+                        while (fechaCorteEfectiva < hoyStr) {
+                            capitalDelBloqueActual = obtenerCapitalEnFecha(fechaInicioMesLogico);
+                            interesEsteCorte = (capitalDelBloqueActual * 0.20) / cortesPorMes;
+
+                            generado += interesEsteCorte;
+
+                            fechaInicioMesLogico = fechaCorteEfectiva;
+                            iteracionCorte++;
+                            fechaCorteEfectiva = sumarMesesPreservandoDia(p.fecha_inicio, iteracionCorte);
                         }
 
-                        const pendiente = generado - pagado - ajustes;
                         fechaVencimiento = fechaCorteEfectiva;
+                    }
 
-                        if (pendiente > 0.01) {
-                            atrasado = true;
-                            mensajeAtraso = `Deuda: $${pendiente.toFixed(2)}`;
-                        }
+                    const pendiente = Math.max(0, generado - pagado - ajustes);
+                    if (pendiente > 0.01) {
+                        atrasado = true;
+                        mensajeAtraso = `Deuda: $${pendiente.toFixed(2)}`;
                     }
 
                 } else {
@@ -251,7 +278,14 @@ export default function CobrosPeriodicos() {
                     }
                 }
 
-                return { ...p, fechaVencimiento, atrasado, mensajeAtraso };
+                return {
+                    ...p,
+                    fechaVencimiento,
+                    atrasado,
+                    mensajeAtraso,
+                    capitalActivo,
+                    interesCicloFijo
+                };
             });
             setPrestamos(procesados);
         } else {
@@ -269,23 +303,24 @@ export default function CobrosPeriodicos() {
             return coincideCobrador && coincideTexto;
         });
 
-        // AGRUPACIÓN INTELIGENTE POR CLIENTE PARA EL ACORDEÓN
         const agrupadosPorCliente = {};
         filtrados.forEach(p => {
             const clienteId = p.clientes.id;
+            const montoMostrar = parseFloat(p.tipo_prestamo === 'mensual_interes' ? p.interesCicloFijo : p.valor_cuota);
+
             if (!agrupadosPorCliente[clienteId]) {
                 agrupadosPorCliente[clienteId] = {
                     ...p,
                     prestamosAgrupados: [p],
-                    montoTotalSuma: parseFloat(p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20) : p.valor_cuota),
+                    montoTotalSuma: montoMostrar,
                     atrasadoAlguna: p.atrasado,
                     mensajesAtraso: p.mensajeAtraso ? [p.mensajeAtraso] : [],
-                    tieneCapitalAjeno: p.es_capital_ajeno // NUEVO: Evaluando el primer préstamo
+                    tieneCapitalAjeno: p.es_capital_ajeno
                 };
             } else {
                 const item = agrupadosPorCliente[clienteId];
                 item.prestamosAgrupados.push(p);
-                item.montoTotalSuma += parseFloat(p.tipo_prestamo === 'mensual_interes' ? (parseFloat(p.monto_total) * 0.20) : p.valor_cuota);
+                item.montoTotalSuma += montoMostrar;
 
                 if (p.atrasado) {
                     item.atrasadoAlguna = true;
@@ -294,12 +329,10 @@ export default function CobrosPeriodicos() {
                     }
                 }
 
-                // NUEVO: Si algún otro préstamo del grupo es ajeno, marcamos todo el grupo como tal
                 if (p.es_capital_ajeno) {
                     item.tieneCapitalAjeno = true;
                 }
 
-                // Conservar la fecha de vencimiento más antigua/próxima
                 if (p.fechaVencimiento.localeCompare(item.fechaVencimiento) < 0) {
                     item.fechaVencimiento = p.fechaVencimiento;
                 }
@@ -397,6 +430,7 @@ export default function CobrosPeriodicos() {
                     <LibretaInteresAbiertoModal
                         prestamo={prestamoSeleccionado}
                         onClose={() => setPrestamoSeleccionado(null)}
+                        onRenovar={renovarPrestamo}
                         onFinalizar={finalizarPrestamo}
                         onUpdate={fetchPrestamosPeriodicos}
                     />

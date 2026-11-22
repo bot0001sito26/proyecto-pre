@@ -5,10 +5,12 @@ import { generarCartulinaPDF } from '../utils/generarCartulinaPDF';
 
 export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinalizar, onUpdate, fechaRuta }) {
     const [cuotas, setCuotas] = useState([]);
+    const [retirosCapital, setRetirosCapital] = useState([]);
     const [cargando, setCargando] = useState(true);
     const [cuotaParaNota, setCuotaParaNota] = useState(null);
 
     const [cobradorLocal, setCobradorLocal] = useState(prestamo?.cobrador || 'principal');
+    const [capitalActivoLocal, setCapitalActivoLocal] = useState(Number(prestamo?.monto_capital || 0));
     const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
 
     // Estados para visualización en Acordeones
@@ -25,7 +27,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     // Obtener la fecha y hora local exacta en formato SQL (YYYY-MM-DD HH:MM:SS) para Ecuador
     const getTimestampLocalSQL = () => {
         const ahora = new Date();
-        // Ajustar a la zona horaria de Ecuador (UTC-5)
         const offsetEcuador = -5 * 60;
         const localTime = new Date(ahora.getTime() + (ahora.getTimezoneOffset() + offsetEcuador) * 60000);
         return localTime.toISOString().slice(0, 19).replace('T', ' ');
@@ -33,12 +34,12 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
 
     useEffect(() => {
         if (prestamo?.id) {
-            fetchCuotas();
+            fetchDatosCartulina();
             setCobradorLocal(prestamo.cobrador || 'principal');
+            setCapitalActivoLocal(Number(prestamo.monto_capital || 0));
         }
     }, [prestamo?.id]);
 
-    // Función auxiliar para reemplazar las alertas del navegador por nuestro modal
     const mostrarAlerta = (titulo, mensaje) => {
         setModalConf({
             isOpen: true,
@@ -63,14 +64,24 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         }
     };
 
-    const fetchCuotas = async () => {
+    const fetchDatosCartulina = async () => {
         setCargando(true);
-        const { data } = await supabase
-            .from('historial_pagos')
-            .select('*')
-            .eq('prestamo_id', prestamo.id)
-            .order('fecha_cobro', { ascending: true });
-        if (data) setCuotas(data);
+        const [resCuotas, resRetiros] = await Promise.all([
+            supabase
+                .from('historial_pagos')
+                .select('*')
+                .eq('prestamo_id', prestamo.id)
+                .order('fecha_cobro', { ascending: true }),
+            supabase
+                .from('movimientos_mensuales')
+                .select('id, fecha, monto, notas')
+                .eq('prestamo_id', prestamo.id)
+                .eq('tipo', 'retiro_capital')
+                .order('fecha', { ascending: false })
+        ]);
+
+        if (resCuotas.data) setCuotas(resCuotas.data);
+        if (resRetiros.data) setRetirosCapital(resRetiros.data);
         setCargando(false);
     };
 
@@ -101,8 +112,6 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         const fechaOperacion = fechaRuta || hoyStr;
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
         const fechaPagoReal = nuevoEstado === 'pagado' ? fechaOperacion : null;
-
-        // Si se marca como pagado, registramos la hora exacta actual; si se desmarca, se limpia
         const fechaRegistroExacta = nuevoEstado === 'pagado' ? getTimestampLocalSQL() : null;
 
         setCuotas(prev => prev.map(c => c.id === cuota.id ? { ...c, estado_cobro: nuevoEstado, monto_recibido: monto, fecha_pago_real: fechaPagoReal, fecha_registro: fechaRegistroExacta } : c));
@@ -117,7 +126,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         if (!error && onUpdate) {
             onUpdate();
         } else if (error) {
-            fetchCuotas();
+            fetchDatosCartulina();
         }
     };
 
@@ -164,8 +173,8 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
             return;
         }
 
-        if (retiroNum > Number(prestamo.monto_capital)) {
-            mostrarAlerta('Límite Excedido', `No puedes retirar más del capital activo ($${prestamo.monto_capital}).`);
+        if (retiroNum > capitalActivoLocal) {
+            mostrarAlerta('Límite Excedido', `No puedes retirar más del capital activo ($${capitalActivoLocal.toFixed(2)}).`);
             return;
         }
 
@@ -187,9 +196,19 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
             monto: monto,
             notas: 'Retiro parcial de capital desde cartulina activa'
         };
-        await supabase.from('movimientos_mensuales').insert([registroRetiro]);
 
-        const nuevoCapital = Number(prestamo.monto_capital) - monto;
+        const { data: nuevoMov, error: errMov } = await supabase
+            .from('movimientos_mensuales')
+            .insert([registroRetiro])
+            .select('id, fecha, monto, notas')
+            .single();
+
+        if (errMov) {
+            mostrarAlerta('Error', 'Hubo un error al registrar el movimiento de retiro.');
+            return;
+        }
+
+        const nuevoCapital = Math.max(0, capitalActivoLocal - monto);
 
         const { error } = await supabase.from('prestamos')
             .update({ monto_capital: nuevoCapital })
@@ -198,20 +217,26 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         if (!error) {
             setMontoRetiro('');
             setMostrandoRetiro(false);
-            setVerCapital(false);
-
+            setCapitalActivoLocal(nuevoCapital);
             prestamo.monto_capital = nuevoCapital;
+
+            if (nuevoMov) {
+                setRetirosCapital(prev => [nuevoMov, ...prev]);
+            }
             if (onUpdate) onUpdate();
 
-            mostrarAlerta('Retiro Exitoso', `$${monto} extraídos a caja. El Capital Activo de este préstamo ha bajado.`);
+            mostrarAlerta('Retiro Exitoso', `$${monto.toFixed(2)} extraídos a caja. El Capital Activo de este préstamo ha bajado a $${nuevoCapital.toFixed(2)}.`);
         } else {
-            mostrarAlerta('Error', 'Hubo un error al retirar el capital.');
+            mostrarAlerta('Error', 'Hubo un error al actualizar el capital del préstamo.');
         }
     };
 
     const cuotasConNotas = cuotas.filter(c => c.notas && c.notas.trim() !== '');
     const cuotasPagadas = cuotas.filter(c => c.estado_cobro === 'pagado').length;
     const dineroRecuperadoFisico = cuotasPagadas * prestamo.valor_cuota;
+
+    const totalCapitalExtraido = retirosCapital.reduce((sum, r) => sum + Number(r.monto || 0), 0);
+    const capitalOriginalCalculado = capitalActivoLocal + totalCapitalExtraido;
 
     return (
         <>
@@ -357,27 +382,62 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                 <span className="text-[10px] font-black uppercase tracking-widest text-blue-900 flex items-center gap-2">
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                     Capital & Extracción
+                                    {totalCapitalExtraido > 0 && (
+                                        <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded text-[9px]">
+                                            Extraído: ${totalCapitalExtraido.toFixed(2)}
+                                        </span>
+                                    )}
                                 </span>
                                 <span className="text-blue-900 font-bold text-xs">{verCapital ? '▲' : '▼'}</span>
                             </button>
 
                             {verCapital && (
                                 <div className="p-4 flex flex-col gap-3 border-t border-blue-200/50 animate-fade-in">
-                                    <div className="flex justify-between items-center border-b border-blue-200/50 pb-2">
-                                        <span className="text-[10px] font-black uppercase tracking-widest text-blue-800">Total Recaudado</span>
-                                        <span className="text-sm font-black text-blue-900">${dineroRecuperadoFisico.toFixed(2)}</span>
+                                    <div className="grid grid-cols-2 gap-2 text-xs">
+                                        <div className="bg-white/80 p-2.5 rounded-lg border border-blue-200/60">
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-600">Capital Inicial</span>
+                                            <span className="font-black text-blue-950 text-sm">${capitalOriginalCalculado.toFixed(2)}</span>
+                                        </div>
+                                        <div className="bg-white/80 p-2.5 rounded-lg border border-blue-200/60">
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-600">Total Recaudado</span>
+                                            <span className="font-black text-blue-950 text-sm">${dineroRecuperadoFisico.toFixed(2)}</span>
+                                        </div>
+                                        <div className="bg-emerald-50/90 p-2.5 rounded-lg border border-emerald-200">
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-emerald-700">Capital Extraído (Caja)</span>
+                                            <span className="font-black text-emerald-800 text-sm">${totalCapitalExtraido.toFixed(2)}</span>
+                                        </div>
+                                        <div className="bg-blue-100/70 p-2.5 rounded-lg border border-blue-300">
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-800">Capital Activo (Calle)</span>
+                                            <span className="font-black text-blue-950 text-sm">${capitalActivoLocal.toFixed(2)}</span>
+                                        </div>
                                     </div>
 
-                                    <div className="flex justify-between items-center">
-                                        <span className="text-[11px] font-black uppercase tracking-widest text-blue-900">Capital Activo (Calle)</span>
-                                        <span className="text-lg font-black text-blue-900">${Number(prestamo.monto_capital).toFixed(2)}</span>
-                                    </div>
+                                    {retirosCapital.length > 0 && (
+                                        <div className="bg-white rounded-lg border border-blue-200/70 p-2.5 space-y-1.5">
+                                            <span className="block text-[9px] font-black uppercase tracking-widest text-blue-800">
+                                                Extracciones Realizadas ({retirosCapital.length})
+                                            </span>
+                                            <div className="max-h-28 overflow-y-auto divide-y divide-gray-100 pr-1">
+                                                {retirosCapital.map((r) => (
+                                                    <div key={r.id} className="py-1.5 flex justify-between items-center text-xs first:pt-0.5 last:pb-0.5">
+                                                        <div className="flex flex-col">
+                                                            <span className="font-bold text-gray-700 text-[11px]">{r.fecha}</span>
+                                                            {r.notas && <span className="text-[9px] text-gray-400">{r.notas}</span>}
+                                                        </div>
+                                                        <span className="font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                                            -${Number(r.monto).toFixed(2)}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
 
                                     {!mostrandoRetiro ? (
                                         <button
                                             onClick={() => setMostrandoRetiro(true)}
-                                            disabled={prestamo.monto_capital <= 0}
-                                            className={`mt-1 bg-white border border-blue-300 text-blue-700 text-xs font-bold py-2.5 rounded-lg transition shadow-sm ${prestamo.monto_capital <= 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-100'}`}
+                                            disabled={capitalActivoLocal <= 0}
+                                            className={`mt-1 bg-white border border-blue-300 text-blue-700 text-xs font-bold py-2.5 rounded-lg transition shadow-sm ${capitalActivoLocal <= 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-100'}`}
                                         >
                                             Extraer Capital a Caja
                                         </button>
@@ -391,14 +451,22 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                                     if (val === '' || Number(val) >= 0) setMontoRetiro(val);
                                                 }}
                                                 placeholder="Monto ($)"
-                                                className="w-2/3 border border-blue-300 rounded-lg p-2 text-xs font-bold outline-none focus:border-blue-500 bg-white"
+                                                className="flex-1 border border-blue-300 rounded-lg p-2 text-xs font-bold outline-none focus:border-blue-500 bg-white"
                                                 autoFocus
                                             />
                                             <button
                                                 onClick={confirmarRetiroCapital}
-                                                className="w-1/3 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition shadow-sm"
+                                                className="bg-blue-600 text-white text-xs font-bold px-3 rounded-lg hover:bg-blue-700 transition shadow-sm"
                                             >
                                                 Retirar
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setMostrandoRetiro(false); setMontoRetiro(''); }}
+                                                className="bg-white border border-blue-200 text-blue-700 text-xs font-bold px-2.5 rounded-lg hover:bg-blue-50 transition"
+                                                title="Cancelar"
+                                            >
+                                                ✕
                                             </button>
                                         </div>
                                     )}

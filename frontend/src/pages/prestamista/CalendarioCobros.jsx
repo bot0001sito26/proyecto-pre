@@ -17,10 +17,10 @@ export default function CalendarioCobros() {
     const hoyStr = getFechaLocal();
     const [fecha, setFecha] = useState(hoyStr);
     const [cobradorActivo, setCobradorActivo] = useState('todos');
+    const [busqueda, setBusqueda] = useState('');
 
     const [clientesAgrupados, setClientesAgrupados] = useState(() => {
         try {
-            // Actualizado a v8 para forzar recarga y traer el nuevo campo
             const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v8'));
             if (cache && cache.fecha === hoyStr) return cache.datos;
             return [];
@@ -37,7 +37,6 @@ export default function CalendarioCobros() {
     const fetchPagos = async () => {
         if (clientesAgrupados.length === 0) setCargando(true);
 
-        // NUEVO: Añadido es_capital_ajeno en la consulta
         const { data, error } = await supabase
             .from('historial_pagos')
             .select(`
@@ -124,7 +123,6 @@ export default function CalendarioCobros() {
                 else if (estados.every(e => e === 'pagado')) estadoGlobal = 'pagado';
                 else if (estados.every(e => e === 'al_dia' || e === 'pagado')) estadoGlobal = 'al_dia';
 
-                // Determinar si este cliente tiene algún préstamo ajeno en la ruta de hoy
                 const tieneCapitalAjeno = prestamosDelCliente.some(p => p.prestamoInfo.es_capital_ajeno);
 
                 return {
@@ -142,12 +140,26 @@ export default function CalendarioCobros() {
         setCargando(false);
     };
 
-    const clientesFiltrados = useMemo(() => {
-        const filtrados = clientesAgrupados.filter(c => {
+    const normalizarTexto = (txt = '') =>
+        txt.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+    const clientesPorCobrador = useMemo(() => {
+        return clientesAgrupados.filter(c => {
             return cobradorActivo === 'todos' || c.listaPrestamos.some(p => (p.prestamoInfo.cobrador || 'principal') === cobradorActivo);
         });
+    }, [clientesAgrupados, cobradorActivo]);
 
-        return filtrados.sort((a, b) => {
+    const clientesFiltrados = useMemo(() => {
+        const termino = normalizarTexto(busqueda);
+
+        const filtrados = termino
+            ? clientesPorCobrador.filter(c =>
+                normalizarTexto(c.cliente.nombre).includes(termino) ||
+                (c.cliente.telefono && c.cliente.telefono.includes(termino))
+            )
+            : clientesPorCobrador;
+
+        return [...filtrados].sort((a, b) => {
             const orden = { 'no_pago': 1, 'pendiente': 2, 'al_dia': 3, 'pagado': 4 };
             const pesoA = orden[a.estadoGlobal] || 2;
             const pesoB = orden[b.estadoGlobal] || 2;
@@ -160,11 +172,12 @@ export default function CalendarioCobros() {
 
             return a.cliente.nombre.localeCompare(b.cliente.nombre);
         });
-    }, [clientesAgrupados, cobradorActivo]);
+    }, [clientesPorCobrador, busqueda]);
 
+    // Los totales siguen reflejando la ruta completa del cobrador seleccionado aunque estés filtrando por nombre
     let totalEsperado = 0;
     let totalCobrado = 0;
-    clientesFiltrados.forEach(c => {
+    clientesPorCobrador.forEach(c => {
         c.listaPrestamos.forEach(p => {
             if (p.tieneCuotaProgramadaHoy) totalEsperado += Number(p.prestamoInfo.valor_cuota);
             totalCobrado += p.montoIngresadoFisicamenteHoy;
@@ -175,7 +188,7 @@ export default function CalendarioCobros() {
         const tituloSecundario = cobradorActivo === 'todos' ? 'Global' : cobradorActivo === 'ayudante' ? 'Ayudante' : 'Mis Cobros';
 
         const datosParaPDF = [];
-        clientesFiltrados.forEach(c => {
+        clientesPorCobrador.forEach(c => {
             c.listaPrestamos.forEach(p => {
                 datosParaPDF.push({
                     prestamos: p.prestamoInfo,
@@ -233,26 +246,50 @@ export default function CalendarioCobros() {
                     <h1 className="text-xl font-black text-neutral-900 tracking-widest uppercase">Ruta Diaria</h1>
                 </div>
 
-                <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
+                <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-1 h-full bg-amber-500"></div>
 
-                    <div className="flex flex-col gap-3 mb-4">
-                        <select value={cobradorActivo} onChange={(e) => setCobradorActivo(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold text-sm focus:border-amber-500 transition">
+                    <div className="flex flex-col gap-2.5 mb-3">
+                        <select value={cobradorActivo} onChange={(e) => setCobradorActivo(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl px-3 py-2.5 outline-none font-bold text-sm focus:border-amber-500 transition">
                             <option value="todos">Ver Ruta Completa (Yo + Ayudante)</option>
                             <option value="principal">Solo Mis Cobros</option>
                             <option value="ayudante">Solo Cobros del Ayudante</option>
                         </select>
 
                         <div className="flex gap-2">
-                            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl p-3 outline-none font-bold focus:border-amber-500 transition" />
-                            <button onClick={descargarPDF} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 rounded-xl font-bold flex items-center justify-center transition-colors shadow-sm gap-2">
-                                <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-800 rounded-xl px-3 py-2.5 outline-none font-bold text-sm focus:border-amber-500 transition" />
+                            <button onClick={descargarPDF} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 rounded-xl font-bold text-sm flex items-center justify-center transition-colors shadow-sm gap-1.5">
+                                <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                                 PDF
                             </button>
                         </div>
+
+                        {/* Buscador minimalista */}
+                        <div className="relative">
+                            <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+                            </svg>
+                            <input
+                                type="text"
+                                value={busqueda}
+                                onChange={(e) => setBusqueda(e.target.value)}
+                                placeholder="Buscar cliente en la ruta..."
+                                className="w-full bg-gray-50/80 border border-gray-200/80 text-gray-800 placeholder-gray-400 rounded-xl pl-9 pr-8 py-2 text-xs font-semibold outline-none focus:bg-white focus:border-amber-500 transition"
+                            />
+                            {busqueda && (
+                                <button
+                                    type="button"
+                                    onClick={() => setBusqueda('')}
+                                    aria-label="Limpiar búsqueda"
+                                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-xs font-black p-1"
+                                >
+                                    ✕
+                                </button>
+                            )}
+                        </div>
                     </div>
 
-                    <div className="flex justify-between text-sm border-t border-gray-100 pt-4">
+                    <div className="flex justify-between text-sm border-t border-gray-100 pt-3">
                         <div>
                             <p className="text-gray-400 font-bold uppercase text-[10px] tracking-widest">Esperado Hoy</p>
                             <p className="font-black text-xl text-neutral-800">${totalEsperado.toFixed(2)}</p>
@@ -269,7 +306,9 @@ export default function CalendarioCobros() {
                         <div className="flex justify-center py-8"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div></div>
                     ) : clientesFiltrados.length === 0 ? (
                         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
-                            <p className="text-gray-400 font-medium">No hay cobros diarios para esta fecha.</p>
+                            <p className="text-gray-400 font-medium">
+                                {busqueda ? `No se encontró ningún cliente para "${busqueda}".` : 'No hay cobros diarios para esta fecha.'}
+                            </p>
                         </div>
                     ) : (
                         clientesFiltrados.map((item) => (
@@ -279,7 +318,6 @@ export default function CalendarioCobros() {
                                 }`}>
                                 <div className="flex justify-between items-start mb-3">
                                     <div>
-                                        {/* NUEVO: Cambio de color del nombre si tiene capital ajeno */}
                                         <h2 className={`font-bold text-lg leading-tight ${item.tieneCapitalAjeno ? 'text-purple-800' : 'text-gray-800'}`}>
                                             {item.cliente.nombre}
                                         </h2>
@@ -308,7 +346,6 @@ export default function CalendarioCobros() {
                                                     {p.prestamoInfo.cobrador === 'ayudante' && (
                                                         <span className="text-[8px] font-black uppercase bg-neutral-200 text-neutral-600 px-1.5 py-0.5 rounded">Ayud.</span>
                                                     )}
-                                                    {/* NUEVO: Badge de préstamo ajeno a nivel de préstamo individual */}
                                                     {p.prestamoInfo.es_capital_ajeno && (
                                                         <span className="text-[8px] font-black uppercase bg-purple-100 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded shadow-sm">A</span>
                                                     )}
@@ -351,6 +388,7 @@ export default function CalendarioCobros() {
                     <LibretaInteresAbiertoModal
                         prestamo={prestamoSeleccionado}
                         onClose={() => setPrestamoSeleccionado(null)}
+                        onRenovar={renovarPrestamo}
                         onFinalizar={finalizarPrestamo}
                         onUpdate={fetchPagos}
                     />
