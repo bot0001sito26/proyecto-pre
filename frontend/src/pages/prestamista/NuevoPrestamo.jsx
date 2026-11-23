@@ -10,19 +10,39 @@ export default function NuevoPrestamo() {
 
     const clientePreseleccionado = location.state?.preselectClienteId || '';
     const prestamoARenovar = location.state?.prestamoARenovar || null;
+    const prestamoPrevio = location.state?.prestamoPrevio || null;
+
+    const mapearFrecuenciaInicial = () => {
+        if (!prestamoPrevio) return 'diario';
+        if (prestamoPrevio.tipo_prestamo !== 'mensual_interes') return 'diario';
+        const f = prestamoPrevio.frecuencia;
+        if (f === 'dias_7') return 'semanal';
+        if (f === 'dias_15') return 'quincenal';
+        if (f === 'mensual') return 'mensual';
+        if (f?.startsWith('dias_')) return 'dias';
+        return 'semanal';
+    };
+
+    const mapearDiasIniciales = () => {
+        const f = prestamoPrevio?.frecuencia;
+        if (f?.startsWith('dias_') && f !== 'dias_7' && f !== 'dias_15') {
+            return f.split('_')[1];
+        }
+        return '';
+    };
 
     const [clientes, setClientes] = useState([]);
     const [clienteId, setClienteId] = useState(clientePreseleccionado);
 
-    const [tipoPrestamo, setTipoPrestamo] = useState('cuota_fija');
-    const [montoCapital, setMontoCapital] = useState('');
-    const [interes, setInteres] = useState('');
+    const [tipoPrestamo, setTipoPrestamo] = useState(prestamoPrevio?.tipo_prestamo || 'cuota_fija');
+    const [montoCapital, setMontoCapital] = useState(prestamoPrevio?.monto_capital ? String(prestamoPrevio.monto_capital) : '');
+    const [interes, setInteres] = useState(prestamoPrevio?.tipo_prestamo === 'mensual_interes' ? '0' : '');
 
-    const [frecuencia, setFrecuencia] = useState('diario');
+    const [frecuencia, setFrecuencia] = useState(mapearFrecuenciaInicial);
     const [numeroCuotas, setNumeroCuotas] = useState(30);
-    const [diasPersonalizados, setDiasPersonalizados] = useState('');
-    const [cobrador, setCobrador] = useState('principal');
-    const [esCapitalAjeno, setEsCapitalAjeno] = useState(false); // NUEVO: Estado para dinero de terceros
+    const [diasPersonalizados, setDiasPersonalizados] = useState(mapearDiasIniciales);
+    const [cobrador, setCobrador] = useState(prestamoPrevio?.cobrador || 'principal');
+    const [esCapitalAjeno, setEsCapitalAjeno] = useState(Boolean(prestamoPrevio?.es_capital_ajeno));
 
     const hoyEstandar = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const [fechaInicio, setFechaInicio] = useState(hoyEstandar);
@@ -35,17 +55,17 @@ export default function NuevoPrestamo() {
         }
     }, [user]);
 
-    // Lógica estricta de modalidades
-    useEffect(() => {
-        if (tipoPrestamo === 'mensual_interes') {
-            setFrecuencia('semanal'); // Por defecto al cambiar a abierto
+    const handleCambiarTipoPrestamo = (nuevoTipo) => {
+        setTipoPrestamo(nuevoTipo);
+        if (nuevoTipo === 'mensual_interes') {
+            setFrecuencia('semanal');
             setInteres('0');
         } else {
-            setFrecuencia('diario'); // Única opción para cuota fija
+            setFrecuencia('diario');
             setNumeroCuotas(30);
             setInteres('');
         }
-    }, [tipoPrestamo]);
+    };
 
     // ----------------------------------------------------
     // FUNCIONES ESTRICTAS EN UTC PARA EVITAR SALTOS DE DÍAS 
@@ -85,12 +105,12 @@ export default function NuevoPrestamo() {
         let frecAGuardar = frecuencia;
 
         if (tipoPrestamo === 'cuota_fija') {
-            cuotasFinales = parseInt(numeroCuotas);
+            cuotasFinales = parseInt(numeroCuotas, 10);
             valorCuota = (montoTotal / cuotasFinales).toFixed(2);
         } else {
             valorCuota = (capital * 0.20).toFixed(2);
             if (frecuencia === 'dias') {
-                const diasInt = parseInt(diasPersonalizados) || 30;
+                const diasInt = parseInt(diasPersonalizados, 10) || 30;
                 frecAGuardar = `dias_${diasInt}`;
             } else if (frecuencia === 'semanal') {
                 frecAGuardar = 'dias_7';
@@ -115,7 +135,7 @@ export default function NuevoPrestamo() {
                 fecha_inicio: fechaInicio,
                 cobrador,
                 tipo_prestamo: tipoPrestamo,
-                es_capital_ajeno: esCapitalAjeno // NUEVO: Se guarda en Supabase
+                es_capital_ajeno: esCapitalAjeno
             }]).select().single();
 
         if (!errorPrestamo && prestamo) {
@@ -124,7 +144,7 @@ export default function NuevoPrestamo() {
             if (tipoPrestamo === 'cuota_fija') {
                 let fechaIterativa = fechaInicio;
                 for (let i = 1; i <= cuotasFinales; i++) {
-                    fechaIterativa = sumarDias(fechaIterativa, 1); // Siempre 1 día para diario
+                    fechaIterativa = sumarDias(fechaIterativa, 1);
                     pagosGenerados.push({
                         prestamo_id: prestamo.id,
                         fecha_cobro: fechaIterativa,
@@ -136,7 +156,7 @@ export default function NuevoPrestamo() {
                 let fechaCobroStr = '';
 
                 if (frecuencia === 'dias') {
-                    const diasInt = parseInt(diasPersonalizados) || 30;
+                    const diasInt = parseInt(diasPersonalizados, 10) || 30;
                     fechaCobroStr = sumarDias(fechaInicio, diasInt);
                 } else if (frecuencia === 'semanal') {
                     fechaCobroStr = sumarDias(fechaInicio, 7);
@@ -184,7 +204,7 @@ export default function NuevoPrestamo() {
         if (!fechaInicio) return '';
         if (tipoPrestamo === 'mensual_interes') {
             if (frecuencia === 'dias') {
-                const d = parseInt(diasPersonalizados) || 0;
+                const d = parseInt(diasPersonalizados, 10) || 0;
                 if (d === 0) return '...';
                 return sumarDias(fechaInicio, d);
             } else if (frecuencia === 'semanal') {
@@ -192,7 +212,6 @@ export default function NuevoPrestamo() {
             } else if (frecuencia === 'quincenal') {
                 return sumarDias(fechaInicio, 15);
             }
-            // Mensual clásico con UTC
             return sumarMesesPreservandoDia(fechaInicio, 1);
         }
         return '';
@@ -206,7 +225,9 @@ export default function NuevoPrestamo() {
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
                         Volver
                     </Link>
-                    <h1 className="text-xl font-black text-neutral-900 tracking-widest uppercase">Nuevo Préstamo</h1>
+                    <h1 className="text-xl font-black text-neutral-900 tracking-widest uppercase">
+                        {prestamoARenovar ? 'Renovar Préstamo' : 'Nuevo Préstamo'}
+                    </h1>
                 </div>
 
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
@@ -217,12 +238,12 @@ export default function NuevoPrestamo() {
                             <label className="block text-[10px] font-black uppercase tracking-widest text-neutral-800 mb-2">Modelo de Préstamo</label>
                             <div className="grid grid-cols-2 gap-2">
                                 <label className={`border p-3 rounded-xl text-center text-xs font-black uppercase tracking-wider cursor-pointer transition flex flex-col items-center justify-center gap-1 ${tipoPrestamo === 'cuota_fija' ? 'bg-amber-100 border-amber-400 text-amber-800 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
-                                    <input type="radio" name="tipoPrestamo" value="cuota_fija" checked={tipoPrestamo === 'cuota_fija'} onChange={() => setTipoPrestamo('cuota_fija')} className="hidden" />
+                                    <input type="radio" name="tipoPrestamo" value="cuota_fija" checked={tipoPrestamo === 'cuota_fija'} onChange={() => handleCambiarTipoPrestamo('cuota_fija')} className="hidden" />
                                     Cuota Fija
                                     <span className="text-[8px] font-medium normal-case tracking-normal">Sólo Diario (Rigido)</span>
                                 </label>
                                 <label className={`border p-3 rounded-xl text-center text-xs font-black uppercase tracking-wider cursor-pointer transition flex flex-col items-center justify-center gap-1 ${tipoPrestamo === 'mensual_interes' ? 'bg-amber-100 border-amber-400 text-amber-800 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
-                                    <input type="radio" name="tipoPrestamo" value="mensual_interes" checked={tipoPrestamo === 'mensual_interes'} onChange={() => setTipoPrestamo('mensual_interes')} className="hidden" />
+                                    <input type="radio" name="tipoPrestamo" value="mensual_interes" checked={tipoPrestamo === 'mensual_interes'} onChange={() => handleCambiarTipoPrestamo('mensual_interes')} className="hidden" />
                                     Interés Abierto
                                     <span className="text-[8px] font-medium normal-case tracking-normal">Capital flexible</span>
                                 </label>
@@ -255,7 +276,6 @@ export default function NuevoPrestamo() {
                             )}
                         </div>
 
-                        {/* NUEVO: Interruptor de Capital Ajeno */}
                         <div className="bg-purple-50/50 border border-purple-100 p-4 rounded-xl flex items-center justify-between gap-4">
                             <div>
                                 <h3 className="text-[11px] font-black text-purple-900 uppercase tracking-widest">Terceros</h3>
@@ -323,13 +343,12 @@ export default function NuevoPrestamo() {
                             </div>
                         </div>
 
-                        {/* RESUMEN */}
                         {montoCapital && (
                             <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-200 text-center">
                                 {tipoPrestamo === 'cuota_fija' && interes !== '' ? (
                                     <>
                                         <p className="text-[10px] text-amber-600 font-black uppercase tracking-widest mb-1">Total a cobrar: ${(parseFloat(montoCapital) + parseFloat(interes || 0)).toFixed(2)}</p>
-                                        <p className="text-xl md:text-2xl text-amber-600 font-black">{numeroCuotas || 0} Pagos de: ${((parseFloat(montoCapital) + parseFloat(interes || 0)) / (parseInt(numeroCuotas) || 1)).toFixed(2)}</p>
+                                        <p className="text-xl md:text-2xl text-amber-600 font-black">{numeroCuotas || 0} Pagos de: ${((parseFloat(montoCapital) + parseFloat(interes || 0)) / (parseInt(numeroCuotas, 10) || 1)).toFixed(2)}</p>
                                     </>
                                 ) : tipoPrestamo === 'mensual_interes' ? (
                                     <>

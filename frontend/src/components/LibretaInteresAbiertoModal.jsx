@@ -13,7 +13,7 @@ import CronogramaCortes from './libreta/CronogramaCortes';
 import HistorialTransaccionesLibreta from './libreta/HistorialTransaccionesLibreta';
 import PanelCierreLibreta from './libreta/PanelCierreLibreta';
 
-export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinalizar, onRenovar, onUpdate }) {
+export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinalizar, onUpdate }) {
     const navigate = useNavigate();
     const [movimientos, setMovimientos] = useState([]);
     const [cargando, setCargando] = useState(true);
@@ -47,6 +47,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
     const {
         id: prestamoId,
+        cliente_id: clienteIdDirecto,
         fecha_inicio: fechaInicio,
         monto_total: montoTotal,
         cobrador,
@@ -56,6 +57,9 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         prestamista_id,
         es_capital_ajeno
     } = prestamo || {};
+
+    const esActivo = estado === 'activo';
+    const clienteIdFinal = clienteIdDirecto || clientes?.id;
     const [cobradorLocal, setCobradorLocal] = useState(cobrador || 'principal');
 
     const infoFrecuencia = useMemo(() => obtenerInfoFrecuencia(frecuencia), [frecuencia]);
@@ -83,8 +87,11 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                 setNuevosDiasEspeciales(infoFrecuencia.diasFrecuencia.toString());
             }
 
+            setTipoAccion(null);
             setModoLiquidacion(false);
             setMostrarNegociar(false);
+            setEditandoParametros(false);
+            setEditandoFechaInicio(false);
             fetchMovimientos();
         }
     }, [prestamoId, frecuencia, fechaInicio, infoFrecuencia.isPersonalizado, infoFrecuencia.diasFrecuencia, cobrador, hoyStr]);
@@ -101,6 +108,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     };
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
+        if (!esActivo) return;
         setCobradorLocal(nuevoCobrador);
         const { error } = await supabase.from('prestamos').update({ cobrador: nuevoCobrador }).eq('id', prestamoId);
         if (!error && onUpdate) onUpdate();
@@ -109,6 +117,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
     const ejecutarRefinanciamiento = async (frecFinal) => {
         setModalConf({ isOpen: false, accion: null });
+        if (!esActivo) return;
         setCargando(true);
 
         if (capitalActualEnVivo <= 0) {
@@ -122,7 +131,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
         const { data: nuevoPrestamo, error } = await supabase.from('prestamos').insert([{
             prestamista_id,
-            cliente_id: clientes.id,
+            cliente_id: clienteIdFinal,
             monto_capital: capitalActualEnVivo,
             interes_total: 0,
             monto_total: capitalActualEnVivo,
@@ -165,6 +174,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     };
 
     const solicitarCambioFrecuencia = () => {
+        if (!esActivo) return;
         let frecFinal = nuevaFrecuencia;
         if (nuevaFrecuencia === 'dias_especial') {
             const diasInt = parseInt(nuevosDiasEspeciales, 10);
@@ -190,7 +200,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
     };
 
     const guardarFechaInicio = () => {
-        if (!fechaInicioTemporal) return;
+        if (!esActivo || !fechaInicioTemporal) return;
         setModalConf({
             isOpen: true,
             titulo: 'Corregir Fecha de Inicio',
@@ -226,6 +236,8 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
     const ejecutarGuardado = async (monto) => {
         setModalConf({ isOpen: false, accion: null });
+        if (!esActivo) return;
+
         const { error } = await supabase.from('movimientos_mensuales').insert([{
             prestamo_id: prestamoId,
             fecha: hoyStr,
@@ -253,6 +265,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
     const handleNegociarInteres = (e) => {
         e.preventDefault();
+        if (!esActivo) return;
         const nuevoTotal = parseFloat(nuevoInteres);
         if (isNaN(nuevoTotal) || nuevoTotal < 0) return alert('Ingrese un valor válido');
 
@@ -290,8 +303,9 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
         });
     };
 
-    const ejecutarCierre = async ({ esRenovacion, modoRenovacion, intCobrado }) => {
+    const ejecutarCierre = async ({ esRenovacion, intCobrado }) => {
         setModalConf({ isOpen: false, accion: null });
+        if (!esActivo) return;
         setCargando(true);
 
         const movs = [];
@@ -325,7 +339,9 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
             });
         }
 
-        if (movs.length > 0) await supabase.from('movimientos_mensuales').insert(movs);
+        if (movs.length > 0) {
+            await supabase.from('movimientos_mensuales').insert(movs);
+        }
 
         await supabase.from('prestamos').update({
             monto_capital: 0,
@@ -334,64 +350,28 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
             fecha_cierre: hoyStr
         }).eq('id', prestamoId);
 
+        setModoLiquidacion(false);
+
         if (!esRenovacion) {
-            setModoLiquidacion(false);
             if (onFinalizar) onFinalizar();
             return;
         }
 
-        if (modoRenovacion === 'mismo_monto') {
-            const nuevoCapital = parseFloat(montoTotal);
-            const valorCuotaNuevo = (nuevoCapital * 0.20).toFixed(2);
-
-            const { data: nuevoPrestamo, error } = await supabase.from('prestamos').insert([{
-                prestamista_id,
-                cliente_id: clientes.id,
-                monto_capital: nuevoCapital,
-                interes_total: 0,
-                monto_total: nuevoCapital,
-                saldo_pendiente: nuevoCapital,
-                frecuencia,
-                valor_cuota: valorCuotaNuevo,
-                fecha_inicio: hoyStr,
-                cobrador: cobradorLocal,
-                es_capital_ajeno: es_capital_ajeno || false,
-                tipo_prestamo: 'mensual_interes'
-            }]).select().single();
-
-            if (!error && nuevoPrestamo) {
-                const fechaCobroStr = frecuencia === 'mensual'
-                    ? sumarMesesPreservandoDia(hoyStr, 1)
-                    : sumarDias(hoyStr, parseInt(frecuencia.split('_')[1], 10) || 30);
-
-                await supabase.from('historial_pagos').insert([{
-                    prestamo_id: nuevoPrestamo.id,
-                    fecha_cobro: fechaCobroStr,
-                    estado_cobro: 'pendiente',
-                    monto_recibido: 0
-                }]);
-
-                await supabase.from('movimientos_mensuales').insert([{
-                    prestamo_id: nuevoPrestamo.id,
-                    fecha: hoyStr,
-                    tipo: 'corte_mes',
-                    monto: nuevoCapital,
-                    notas: `Renovación directa de crédito anterior (${infoFrecuencia.textoFrecuencia}).`
-                }]);
-
-                setModoLiquidacion(false);
-                onClose();
-                if (onUpdate) onUpdate();
-            } else {
-                alert('El préstamo anterior se liquidó, pero hubo un error al crear el nuevo: ' + (error?.message || ''));
-                setCargando(false);
+        // Redirigir siempre al formulario de Nuevo Préstamo con el cliente y datos previos preseleccionados
+        onClose();
+        navigate('/nuevo-prestamo', {
+            state: {
+                preselectClienteId: clienteIdFinal,
+                prestamoARenovar: prestamoId,
+                prestamoPrevio: {
+                    tipo_prestamo: 'mensual_interes',
+                    monto_capital: montoTotal,
+                    frecuencia,
+                    cobrador: cobradorLocal,
+                    es_capital_ajeno: es_capital_ajeno || false
+                }
             }
-        } else {
-            setModoLiquidacion(false);
-            onClose();
-            if (onRenovar) onRenovar(clientes.id, prestamoId);
-            else navigate('/nuevo-prestamo', { state: { preselectClienteId: clientes.id, prestamoARenovar: prestamoId } });
-        }
+        });
     };
 
     return (
@@ -400,12 +380,19 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                 <div className="bg-white w-full max-w-lg rounded-t-2xl md:rounded-2xl h-[90vh] md:h-auto max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
                     {/* ENCABEZADO */}
                     <div className={`p-4 text-white flex justify-between items-center ${infoFrecuencia.isPersonalizado ? 'bg-emerald-900 border-b border-emerald-500/30' : 'bg-neutral-900 border-b border-amber-500/30'}`}>
-                        <span className={`text-xs font-black uppercase tracking-widest flex items-center gap-2 ${infoFrecuencia.isPersonalizado ? 'text-emerald-400' : 'text-amber-500'}`}>
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                            </svg>
-                            Libreta Abierta
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className={`text-xs font-black uppercase tracking-widest flex items-center gap-2 ${infoFrecuencia.isPersonalizado ? 'text-emerald-400' : 'text-amber-500'}`}>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                </svg>
+                                Libreta Abierta
+                            </span>
+                            {!esActivo && (
+                                <span className="bg-red-500/20 text-red-300 border border-red-400/40 text-[9px] font-black uppercase px-2 py-0.5 rounded">
+                                    {estado === 'renovado' ? 'Renovado' : 'Cerrado'}
+                                </span>
+                            )}
+                        </div>
 
                         <div className="flex gap-4">
                             <button
@@ -434,13 +421,13 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                             <div className={`absolute top-0 left-0 w-full h-1 ${infoFrecuencia.isPersonalizado ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
 
                             <div className="mb-4 text-sm font-bold leading-relaxed text-neutral-700">
-                                {/* Cliente + Botón Ajustes */}
+                                {/* Cliente + Botón Ajustes (solo si está activo) */}
                                 <div className="flex justify-between items-center border-b border-neutral-200 border-dashed pb-1 mb-2">
                                     <div className="flex items-center">
                                         <span className="w-24 text-neutral-400">Cliente:</span>
                                         <span className="truncate">{clientes?.nombre}</span>
                                     </div>
-                                    {!editandoParametros && (
+                                    {esActivo && !editandoParametros && (
                                         <button
                                             onClick={() => { setFechaRefinanciamiento(hoyStr); setEditandoParametros(true); }}
                                             className="text-[9px] bg-amber-100 text-amber-700 px-2 py-1 rounded font-black uppercase hover:bg-amber-200 border border-amber-200 flex items-center gap-1"
@@ -450,8 +437,8 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                     )}
                                 </div>
 
-                                {/* Panel Ajustes (Solo cambio de frecuencia / refinanciamiento) */}
-                                {editandoParametros && (
+                                {/* Panel Ajustes (Solo cambio de frecuencia / refinanciamiento en créditos activos) */}
+                                {esActivo && editandoParametros && (
                                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3 space-y-3 animate-fade-in">
                                         <div className="flex flex-col gap-1">
                                             <label className="text-[10px] font-black uppercase text-amber-800">Nueva Frecuencia (Refinanciar saldo):</label>
@@ -508,11 +495,11 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                     </div>
                                 )}
 
-                                {/* Inicio (con lápiz para corregir) y Frecuencia */}
+                                {/* Inicio (lápiz solo si está activo) y Frecuencia */}
                                 <div className="flex justify-between items-center border-b border-neutral-200 border-dashed pb-1 mb-1">
                                     <div className="flex items-center gap-2">
                                         <span className="w-24 text-neutral-400">Inicio:</span>
-                                        {editandoFechaInicio ? (
+                                        {esActivo && editandoFechaInicio ? (
                                             <div className="flex items-center gap-1">
                                                 <input
                                                     type="date"
@@ -526,15 +513,17 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                         ) : (
                                             <div className="flex items-center gap-1.5">
                                                 <span>{fechaInicio}</span>
-                                                <button
-                                                    onClick={() => { setFechaInicioTemporal(fechaInicio); setEditandoFechaInicio(true); }}
-                                                    className="text-neutral-400 hover:text-amber-600 transition p-0.5"
-                                                    title="Corregir Fecha de Inicio"
-                                                >
-                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                                    </svg>
-                                                </button>
+                                                {esActivo && (
+                                                    <button
+                                                        onClick={() => { setFechaInicioTemporal(fechaInicio); setEditandoFechaInicio(true); }}
+                                                        className="text-neutral-400 hover:text-amber-600 transition p-0.5"
+                                                        title="Corregir Fecha de Inicio"
+                                                    >
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                                        </svg>
+                                                    </button>
+                                                )}
                                             </div>
                                         )}
                                     </div>
@@ -582,7 +571,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                 </p>
                                 <p className="text-2xl font-black">${cargando ? '0.00' : calculos.pendiente.toFixed(2)}</p>
 
-                                {calculos.pendiente > 0 && !modoLiquidacion && (
+                                {esActivo && calculos.pendiente > 0 && !modoLiquidacion && (
                                     <button onClick={() => setMostrarNegociar(!mostrarNegociar)} className="mt-2 text-[9px] font-black uppercase bg-white/50 px-2 py-1 rounded border border-current hover:bg-white/80">
                                         {mostrarNegociar ? 'Cancelar Negociación' : 'Negociar Deuda'}
                                     </button>
@@ -595,7 +584,7 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                 </div>
                             </div>
 
-                            {mostrarNegociar && (
+                            {esActivo && mostrarNegociar && (
                                 <div className="bg-purple-50 p-3 rounded-xl border border-purple-200 mb-4 animate-fade-in">
                                     <h3 className="text-[10px] font-black uppercase tracking-widest text-purple-700 mb-1">Acuerdo de Pago</h3>
                                     <p className="text-[9px] text-purple-600 mb-2">Ingresa el <strong>nuevo monto total</strong> que debe pagarte de interés.</p>
@@ -606,48 +595,52 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                                 </div>
                             )}
 
-                            {/* Botones Abono / Pago + Historial */}
+                            {/* Botones Abono / Pago (solo activos) + Historial */}
                             <div className="space-y-4">
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button
-                                        onClick={() => setTipoAccion('abono_capital')}
-                                        disabled={cargando || modoLiquidacion}
-                                        className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'abono_capital' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 disabled:opacity-50'}`}
-                                    >
-                                        + Abono Capital
-                                    </button>
-                                    <button
-                                        onClick={() => { setTipoAccion('pago_interes'); if (calculos.pendiente > 0) setMontoAccion(calculos.pendiente.toFixed(2)); }}
-                                        disabled={cargando || modoLiquidacion}
-                                        className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'pago_interes' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200 disabled:opacity-50'}`}
-                                    >
-                                        + Pago Interés
-                                    </button>
-                                </div>
+                                {esActivo && (
+                                    <>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                onClick={() => setTipoAccion('abono_capital')}
+                                                disabled={cargando || modoLiquidacion}
+                                                className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'abono_capital' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 disabled:opacity-50'}`}
+                                            >
+                                                + Abono Capital
+                                            </button>
+                                            <button
+                                                onClick={() => { setTipoAccion('pago_interes'); if (calculos.pendiente > 0) setMontoAccion(calculos.pendiente.toFixed(2)); }}
+                                                disabled={cargando || modoLiquidacion}
+                                                className={`p-3 rounded-xl font-black text-xs uppercase tracking-wider border transition-all ${tipoAccion === 'pago_interes' ? 'bg-neutral-900 text-amber-500 border-neutral-900' : 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200 disabled:opacity-50'}`}
+                                            >
+                                                + Pago Interés
+                                            </button>
+                                        </div>
 
-                                {tipoAccion && (
-                                    <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-2 animate-fade-in">
-                                        <div className="flex justify-between items-center">
-                                            <span className="text-[10px] font-black uppercase tracking-widest text-amber-900">
-                                                Registrar {tipoAccion === 'abono_capital' ? 'Abono a Capital' : 'Pago de Interés'}
-                                            </span>
-                                            <button onClick={() => { setTipoAccion(null); setMontoAccion(''); }} className="text-amber-800 font-bold text-xs">✕</button>
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <input type="number" step="0.01" min="0.01" placeholder="Monto ($)" value={montoAccion} onChange={(e) => setMontoAccion(e.target.value)} className="w-1/2 bg-white border border-amber-200 rounded-lg p-2 text-xs font-bold outline-none focus:border-amber-500" autoFocus />
-                                            <input type="text" placeholder="Nota opcional..." value={notaAccion} onChange={(e) => setNotaAccion(e.target.value)} className="w-1/2 bg-white border border-amber-200 rounded-lg p-2 text-xs font-medium outline-none focus:border-amber-500" />
-                                        </div>
-                                        <button
-                                            onClick={() => {
-                                                const m = parseFloat(montoAccion);
-                                                if (isNaN(m) || m <= 0) return alert('Ingresa un monto válido.');
-                                                setModalConf({ isOpen: true, titulo: 'Confirmar Acción', mensaje: `¿Registrar $${m.toFixed(2)}?`, accion: () => ejecutarGuardado(m) });
-                                            }}
-                                            className="w-full bg-amber-500 text-neutral-950 font-black py-2 rounded-lg text-xs uppercase tracking-wider hover:bg-amber-600 transition"
-                                        >
-                                            Guardar Movimiento
-                                        </button>
-                                    </div>
+                                        {tipoAccion && (
+                                            <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-2 animate-fade-in">
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-[10px] font-black uppercase tracking-widest text-amber-900">
+                                                        Registrar {tipoAccion === 'abono_capital' ? 'Abono a Capital' : 'Pago de Interés'}
+                                                    </span>
+                                                    <button onClick={() => { setTipoAccion(null); setMontoAccion(''); }} className="text-amber-800 font-bold text-xs">✕</button>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <input type="number" step="0.01" min="0.01" placeholder="Monto ($)" value={montoAccion} onChange={(e) => setMontoAccion(e.target.value)} className="w-1/2 bg-white border border-amber-200 rounded-lg p-2 text-xs font-bold outline-none focus:border-amber-500" autoFocus />
+                                                    <input type="text" placeholder="Nota opcional..." value={notaAccion} onChange={(e) => setNotaAccion(e.target.value)} className="w-1/2 bg-white border border-amber-200 rounded-lg p-2 text-xs font-medium outline-none focus:border-amber-500" />
+                                                </div>
+                                                <button
+                                                    onClick={() => {
+                                                        const m = parseFloat(montoAccion);
+                                                        if (isNaN(m) || m <= 0) return alert('Ingresa un monto válido.');
+                                                        setModalConf({ isOpen: true, titulo: 'Confirmar Acción', mensaje: `¿Registrar $${m.toFixed(2)}?`, accion: () => ejecutarGuardado(m) });
+                                                    }}
+                                                    className="w-full bg-amber-500 text-neutral-950 font-black py-2 rounded-lg text-xs uppercase tracking-wider hover:bg-amber-600 transition"
+                                                >
+                                                    Guardar Movimiento
+                                                </button>
+                                            </div>
+                                        )}
+                                    </>
                                 )}
 
                                 <HistorialTransaccionesLibreta cargando={cargando} movimientos={movimientos} />
@@ -656,10 +649,24 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
 
                         {/* Selector de Cobrador */}
                         <div className="flex flex-col gap-2 bg-gray-50 p-3 rounded-xl border border-gray-100 mt-2">
-                            <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest text-center">¿Quién cobra este crédito?</span>
+                            <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest text-center">
+                                {esActivo ? '¿Quién cobra este crédito?' : 'Cobrador asignado'}
+                            </span>
                             <div className="flex bg-gray-200 p-1 rounded-lg">
-                                <button onClick={() => handleCambiarCobrador('principal')} className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${cobradorLocal === 'principal' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}>Yo (Principal)</button>
-                                <button onClick={() => handleCambiarCobrador('ayudante')} className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${cobradorLocal === 'ayudante' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}>Ayudante</button>
+                                <button
+                                    onClick={() => handleCambiarCobrador('principal')}
+                                    disabled={!esActivo}
+                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all disabled:cursor-not-allowed ${cobradorLocal === 'principal' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}
+                                >
+                                    Yo (Principal)
+                                </button>
+                                <button
+                                    onClick={() => handleCambiarCobrador('ayudante')}
+                                    disabled={!esActivo}
+                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all disabled:cursor-not-allowed ${cobradorLocal === 'ayudante' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}
+                                >
+                                    Ayudante
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -672,8 +679,6 @@ export default function LibretaInteresAbiertoModal({ prestamo, onClose, onFinali
                         onCerrarPanel={() => setModoLiquidacion(false)}
                         capitalActualEnVivo={capitalActualEnVivo}
                         pendiente={calculos.pendiente}
-                        montoTotal={montoTotal}
-                        textoFrecuencia={infoFrecuencia.textoFrecuencia}
                         nombreCliente={clientes?.nombre}
                         onSolicitarConfirmacion={({ titulo, mensaje, datosCierre }) =>
                             setModalConf({ isOpen: true, titulo, mensaje, accion: () => ejecutarCierre(datosCierre) })

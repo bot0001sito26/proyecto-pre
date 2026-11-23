@@ -7,18 +7,14 @@ export default function PanelCierreLibreta({
     onCerrarPanel,
     capitalActualEnVivo,
     pendiente,
-    montoTotal,
-    textoFrecuencia,
     nombreCliente,
     onSolicitarConfirmacion
 }) {
     const [tipoCierre, setTipoCierre] = useState('liquidar'); // 'liquidar' | 'renovar'
-    const [modoRenovacion, setModoRenovacion] = useState('mismo_monto'); // 'mismo_monto' | 'otro_monto'
     const [interesLiquidacion, setInteresLiquidacion] = useState('0.00');
 
     const abrir = (modo) => {
         setTipoCierre(modo);
-        setModoRenovacion('mismo_monto');
         setInteresLiquidacion(Math.max(0, pendiente).toFixed(2));
         onAbrirPanel();
     };
@@ -28,21 +24,29 @@ export default function PanelCierreLibreta({
         const esRenovacion = tipoCierre === 'renovar';
 
         const mensaje = esRenovacion
-            ? (modoRenovacion === 'mismo_monto'
-                ? `Se liquidará este crédito ($${capitalActualEnVivo.toFixed(2)} capital + $${intVal.toFixed(2)} interés) y se abrirá uno nuevo por $${parseFloat(montoTotal).toFixed(2)} (${textoFrecuencia}).`
-                : `Se liquidará este crédito ($${capitalActualEnVivo.toFixed(2)} capital + $${intVal.toFixed(2)} interés) y pasarás a configurar el nuevo préstamo para ${nombreCliente}.`)
+            ? `Se liquidará este crédito ($${capitalActualEnVivo.toFixed(2)} capital + $${intVal.toFixed(2)} interés) y pasarás al formulario de Nuevo Préstamo para ${nombreCliente || 'este cliente'}.`
             : `Se pagará capital ($${capitalActualEnVivo.toFixed(2)}) y un interés final de $${intVal.toFixed(2)}.`;
 
         onSolicitarConfirmacion({
             titulo: esRenovacion ? 'Confirmar Renovación' : 'Confirmar Liquidación',
             mensaje,
-            datosCierre: { esRenovacion, modoRenovacion, intCobrado: intVal }
+            datosCierre: { esRenovacion, intCobrado: intVal }
         });
     };
 
+    if (estado !== 'activo') {
+        return (
+            <div className="p-3 border-t border-neutral-200 bg-neutral-100 text-center">
+                <span className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
+                    Crédito {estado === 'renovado' ? 'Renovado' : 'Cerrado'} • Solo Lectura
+                </span>
+            </div>
+        );
+    }
+
     return (
         <div className="p-4 border-t border-neutral-200 bg-neutral-50 flex flex-col gap-2">
-            {estado === 'activo' && !modoLiquidacion && (
+            {!modoLiquidacion && (
                 <div className="grid grid-cols-2 gap-2">
                     <button
                         onClick={() => abrir('renovar')}
@@ -102,33 +106,9 @@ export default function PanelCierreLibreta({
                     </div>
 
                     {tipoCierre === 'renovar' && (
-                        <div className="bg-white border border-amber-200 rounded-lg p-2.5 space-y-2">
-                            <span className="block text-[9px] font-black uppercase tracking-wider text-amber-800">¿Cómo deseas renovar?</span>
-                            <label className="flex items-start gap-2 text-xs cursor-pointer">
-                                <input
-                                    type="radio"
-                                    name="modoRenovacion"
-                                    checked={modoRenovacion === 'mismo_monto'}
-                                    onChange={() => setModoRenovacion('mismo_monto')}
-                                    className="mt-0.5 accent-amber-600"
-                                />
-                                <span className="font-bold text-neutral-800 leading-tight">
-                                    Renovación rápida: mismo monto (${parseFloat(montoTotal).toFixed(2)}) y misma modalidad ({textoFrecuencia}) hoy
-                                </span>
-                            </label>
-                            <label className="flex items-start gap-2 text-xs cursor-pointer">
-                                <input
-                                    type="radio"
-                                    name="modoRenovacion"
-                                    checked={modoRenovacion === 'otro_monto'}
-                                    onChange={() => setModoRenovacion('otro_monto')}
-                                    className="mt-0.5 accent-amber-600"
-                                />
-                                <span className="font-bold text-neutral-800 leading-tight">
-                                    Cambiar monto o modalidad (ir a Nuevo Préstamo con el cliente preseleccionado)
-                                </span>
-                            </label>
-                        </div>
+                        <p className="text-[10px] font-bold text-amber-900 bg-white/80 border border-amber-200 rounded-lg p-2 leading-snug">
+                            Al confirmar, se saldará este crédito y se abrirá el formulario de <strong>Nuevo Préstamo</strong> con el cliente preseleccionado.
+                        </p>
                     )}
 
                     <div className="flex gap-2 mt-1">
@@ -145,7 +125,7 @@ export default function PanelCierreLibreta({
                                     : 'bg-red-600 text-white hover:bg-red-700'
                                 }`}
                         >
-                            {tipoCierre === 'renovar' ? 'Confirmar y Renovar' : 'Confirmar Pago'}
+                            {tipoCierre === 'renovar' ? 'Confirmar e Ir a Nuevo' : 'Confirmar Pago'}
                         </button>
                     </div>
                 </div>

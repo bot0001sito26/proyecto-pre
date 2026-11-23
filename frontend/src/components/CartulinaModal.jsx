@@ -21,6 +21,8 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     const [montoRetiro, setMontoRetiro] = useState('');
     const [mostrandoRetiro, setMostrandoRetiro] = useState(false);
 
+    const esActivo = prestamo?.estado === 'activo';
+
     const getFechaLocal = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const hoyStr = getFechaLocal();
 
@@ -37,6 +39,9 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
             fetchDatosCartulina();
             setCobradorLocal(prestamo.cobrador || 'principal');
             setCapitalActivoLocal(Number(prestamo.monto_capital || 0));
+            setMostrandoRetiro(false);
+            setMontoRetiro('');
+            setCuotaParaNota(null);
         }
     }, [prestamo?.id]);
 
@@ -50,6 +55,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     };
 
     const handleCambiarCobrador = async (nuevoCobrador) => {
+        if (!esActivo) return;
         setCobradorLocal(nuevoCobrador);
         const { error } = await supabase
             .from('prestamos')
@@ -86,7 +92,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     };
 
     const cambiarEstadoCuota = (cuota) => {
-        if (cuota.estado_cobro === 'renovado' || prestamo.estado !== 'activo') return;
+        if (cuota.estado_cobro === 'renovado' || !esActivo) return;
 
         let nuevoEstado = 'pagado';
         let textoAccion = 'PAGADA';
@@ -108,6 +114,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
 
     const ejecutarCambioEstado = async (cuota, nuevoEstado) => {
         setModalConf({ isOpen: false, accion: null });
+        if (!esActivo) return;
 
         const fechaOperacion = fechaRuta || hoyStr;
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
@@ -131,6 +138,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     };
 
     const guardarNota = async (cuotaId, nuevaNota) => {
+        if (!esActivo) return;
         let notaFinal = nuevaNota.trim();
 
         if (notaFinal && !notaFinal.includes('(Anotado:')) {
@@ -148,6 +156,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     };
 
     const pedirConfirmacionFinalizar = () => {
+        if (!esActivo) return;
         setModalConf({
             isOpen: true,
             titulo: 'Finalizar Crédito',
@@ -157,6 +166,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     };
 
     const pedirConfirmacionRenovar = () => {
+        if (!esActivo) return;
         setModalConf({
             isOpen: true,
             titulo: 'Renovar Crédito',
@@ -166,6 +176,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     };
 
     const confirmarRetiroCapital = () => {
+        if (!esActivo) return;
         const retiroNum = parseFloat(montoRetiro);
 
         if (!retiroNum || retiroNum <= 0) {
@@ -188,6 +199,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
 
     const ejecutarRetiroCapital = async (monto) => {
         setModalConf({ isOpen: false, accion: null });
+        if (!esActivo) return;
 
         const registroRetiro = {
             prestamo_id: prestamo.id,
@@ -238,16 +250,25 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
     const totalCapitalExtraido = retirosCapital.reduce((sum, r) => sum + Number(r.monto || 0), 0);
     const capitalOriginalCalculado = capitalActivoLocal + totalCapitalExtraido;
 
+    const deshabilitarRetiro = !esActivo || capitalActivoLocal <= 0;
+
     return (
         <>
             <div className="fixed inset-0 bg-neutral-950/70 flex items-end md:items-center justify-center p-0 md:p-4 z-50 backdrop-blur-sm transition-opacity">
                 <div className="bg-white w-full max-w-lg rounded-t-2xl md:rounded-2xl h-[90vh] md:h-auto max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
 
                     <div className="p-4 bg-neutral-900 text-white flex justify-between items-center border-b border-amber-500/30">
-                        <span className="text-xs font-black uppercase tracking-widest text-amber-500 flex items-center gap-2">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
-                            Cartulina Anubis
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-black uppercase tracking-widest text-amber-500 flex items-center gap-2">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                                Cartulina Anubis
+                            </span>
+                            {!esActivo && (
+                                <span className="bg-red-500/20 text-red-300 border border-red-400/40 text-[9px] font-black uppercase px-2 py-0.5 rounded">
+                                    {prestamo.estado === 'renovado' ? 'Renovado' : 'Finalizado'}
+                                </span>
+                            )}
+                        </div>
                         <div className="flex items-center gap-2">
                             <button onClick={() => generarCartulinaPDF(prestamo, cuotas)} className="text-amber-500 hover:text-white transition p-1 flex items-center gap-1 font-black uppercase text-[10px] bg-amber-500/10 hover:bg-amber-500/30 px-2 rounded-md border border-amber-500/30">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
@@ -293,7 +314,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                         else if (c.estado_cobro === 'renovado') colorClase = 'bg-neutral-200 text-neutral-400 opacity-60 line-through cursor-not-allowed';
 
                                         const diaDelMes = c.fecha_cobro.split('-')[2];
-                                        const puedeEditar = c.estado_cobro !== 'renovado' && prestamo.estado === 'activo';
+                                        const puedeEditar = c.estado_cobro !== 'renovado' && esActivo;
                                         const estaAbiertaParaNota = cuotaParaNota?.id === c.id;
 
                                         return (
@@ -301,7 +322,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                                 <button
                                                     onClick={() => cambiarEstadoCuota(c)}
                                                     disabled={!puedeEditar}
-                                                    className={`w-full aspect-square flex items-center justify-center border-r-2 border-b-2 border-neutral-900 text-lg sm:text-xl font-black transition-transform outline-none focus:outline-none ${puedeEditar ? 'cursor-pointer active:scale-90' : ''} ${colorClase} ${estaAbiertaParaNota ? 'ring-2 ring-amber-500 z-10' : ''}`}
+                                                    className={`w-full aspect-square flex items-center justify-center border-r-2 border-b-2 border-neutral-900 text-lg sm:text-xl font-black transition-transform outline-none focus:outline-none ${puedeEditar ? 'cursor-pointer active:scale-90' : 'cursor-not-allowed'} ${colorClase} ${estaAbiertaParaNota ? 'ring-2 ring-amber-500 z-10' : ''}`}
                                                 >
                                                     {diaDelMes}
                                                 </button>
@@ -325,7 +346,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                             )}
                         </div>
 
-                        {cuotaParaNota && (
+                        {esActivo && cuotaParaNota && (
                             <div key={cuotaParaNota.id} className="bg-amber-50 border border-amber-300 rounded-xl p-3 shadow-sm relative animate-fade-in">
                                 <div className="flex justify-between items-center mb-1.5">
                                     <span className="text-[10px] font-black text-amber-800 uppercase tracking-widest">
@@ -433,11 +454,11 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                         </div>
                                     )}
 
-                                    {!mostrandoRetiro ? (
+                                    {!mostrandoRetiro || !esActivo ? (
                                         <button
                                             onClick={() => setMostrandoRetiro(true)}
-                                            disabled={capitalActivoLocal <= 0}
-                                            className={`mt-1 bg-white border border-blue-300 text-blue-700 text-xs font-bold py-2.5 rounded-lg transition shadow-sm ${capitalActivoLocal <= 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-100'}`}
+                                            disabled={deshabilitarRetiro}
+                                            className={`mt-1 bg-white border border-blue-300 text-blue-700 text-xs font-bold py-2.5 rounded-lg transition shadow-sm ${deshabilitarRetiro ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-100'}`}
                                         >
                                             Extraer Capital a Caja
                                         </button>
@@ -476,18 +497,20 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
 
                         <div className="flex flex-col gap-2 bg-gray-50 p-3 rounded-xl border border-gray-100 mt-2">
                             <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest text-center">
-                                ¿Quién cobra este crédito?
+                                {esActivo ? '¿Quién cobra este crédito?' : 'Cobrador asignado'}
                             </span>
-                            <div className="flex bg-gray-200 p-1 rounded-lg">
+                            <div className={`flex bg-gray-200 p-1 rounded-lg ${!esActivo ? 'opacity-70' : ''}`}>
                                 <button
                                     onClick={() => handleCambiarCobrador('principal')}
-                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${cobradorLocal === 'principal' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}
+                                    disabled={!esActivo}
+                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all disabled:cursor-not-allowed ${cobradorLocal === 'principal' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}
                                 >
                                     Yo (Principal)
                                 </button>
                                 <button
                                     onClick={() => handleCambiarCobrador('ayudante')}
-                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${cobradorLocal === 'ayudante' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}
+                                    disabled={!esActivo}
+                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-md transition-all disabled:cursor-not-allowed ${cobradorLocal === 'ayudante' ? 'bg-neutral-900 text-amber-500 shadow-sm' : 'text-gray-500 hover:text-neutral-800'}`}
                                 >
                                     Ayudante
                                 </button>
@@ -495,20 +518,24 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                         </div>
                     </div>
 
-                    <div className="p-4 border-t border-neutral-200 bg-neutral-50 flex gap-2">
-                        {prestamo.estado === 'activo' && (
-                            <>
-                                <button onClick={pedirConfirmacionRenovar} className="flex-1 bg-neutral-900 text-amber-500 font-black uppercase tracking-wider py-3 rounded-lg hover:bg-black shadow-md text-xs flex items-center justify-center gap-2 transition">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                                    Renovar
-                                </button>
-                                <button onClick={pedirConfirmacionFinalizar} className="flex-1 bg-amber-500 text-neutral-950 font-black uppercase tracking-wider py-3 rounded-lg hover:bg-amber-600 shadow-md text-xs flex items-center justify-center gap-2 transition">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                                    Finalizar
-                                </button>
-                            </>
-                        )}
-                    </div>
+                    {esActivo ? (
+                        <div className="p-4 border-t border-neutral-200 bg-neutral-50 flex gap-2">
+                            <button onClick={pedirConfirmacionRenovar} className="flex-1 bg-neutral-900 text-amber-500 font-black uppercase tracking-wider py-3 rounded-lg hover:bg-black shadow-md text-xs flex items-center justify-center gap-2 transition">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                Renovar
+                            </button>
+                            <button onClick={pedirConfirmacionFinalizar} className="flex-1 bg-amber-500 text-neutral-950 font-black uppercase tracking-wider py-3 rounded-lg hover:bg-amber-600 shadow-md text-xs flex items-center justify-center gap-2 transition">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                                Finalizar
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="p-3 border-t border-neutral-200 bg-neutral-100 text-center">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
+                                Crédito {prestamo.estado === 'renovado' ? 'Renovado' : 'Finalizado'} • Solo Lectura
+                            </span>
+                        </div>
+                    )}
                 </div>
             </div>
 
