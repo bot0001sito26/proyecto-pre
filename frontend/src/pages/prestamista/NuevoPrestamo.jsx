@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import supabase from '../../supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
@@ -34,8 +34,9 @@ export default function NuevoPrestamo() {
     const [clientes, setClientes] = useState([]);
     const [clienteId, setClienteId] = useState(clientePreseleccionado);
 
+    // En renovación solo se precarga el cliente; monto e interés inician vacíos
     const [tipoPrestamo, setTipoPrestamo] = useState(prestamoPrevio?.tipo_prestamo || 'cuota_fija');
-    const [montoCapital, setMontoCapital] = useState(prestamoPrevio?.monto_capital ? String(prestamoPrevio.monto_capital) : '');
+    const [montoCapital, setMontoCapital] = useState('');
     const [interes, setInteres] = useState(prestamoPrevio?.tipo_prestamo === 'mensual_interes' ? '0' : '');
 
     const [frecuencia, setFrecuencia] = useState(mapearFrecuenciaInicial);
@@ -43,6 +44,8 @@ export default function NuevoPrestamo() {
     const [diasPersonalizados, setDiasPersonalizados] = useState(mapearDiasIniciales);
     const [cobrador, setCobrador] = useState(prestamoPrevio?.cobrador || 'principal');
     const [esCapitalAjeno, setEsCapitalAjeno] = useState(Boolean(prestamoPrevio?.es_capital_ajeno));
+
+    const [infoRenovacion, setInfoRenovacion] = useState(null);
 
     const hoyEstandar = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const [fechaInicio, setFechaInicio] = useState(hoyEstandar);
@@ -54,6 +57,66 @@ export default function NuevoPrestamo() {
                 .then(({ data }) => { if (data) setClientes(data); });
         }
     }, [user]);
+
+    // Cargar cálculo de liquidación del crédito anterior cuando es renovación (sin rellenar monto ni interés)
+    useEffect(() => {
+        if (!prestamoARenovar) return;
+
+        const cargarDatosRenovacion = async () => {
+            const [{ data: pViejo }, { data: cuotasViejas }] = await Promise.all([
+                supabase
+                    .from('prestamos')
+                    .select('id, cliente_id, monto_capital, interes_total, monto_total, valor_cuota, cobrador, es_capital_ajeno, tipo_prestamo')
+                    .eq('id', prestamoARenovar)
+                    .single(),
+                supabase
+                    .from('historial_pagos')
+                    .select('id, estado_cobro, monto_recibido')
+                    .eq('prestamo_id', prestamoARenovar)
+            ]);
+
+            if (pViejo) {
+                const montoTotalViejo = Number(pViejo.monto_total || 0);
+                const interesViejo = Number(pViejo.interes_total || 0);
+                const capitalOriginalViejo = Math.max(0, montoTotalViejo - interesViejo);
+                const valorCuotaVieja = Number(pViejo.valor_cuota || 0);
+
+                const pagadas = (cuotasViejas || []).filter(c => c.estado_cobro === 'pagado');
+                const pendientes = (cuotasViejas || []).filter(c => c.estado_cobro === 'pendiente' || c.estado_cobro === 'no_pago');
+
+                const totalPagadoViejo = pagadas.reduce(
+                    (sum, c) => sum + Number(c.monto_recibido || valorCuotaVieja),
+                    0
+                );
+                const saldoDescontado = pendientes.length * valorCuotaVieja;
+                const gananciaLiberada = Math.max(0, (totalPagadoViejo + saldoDescontado) - capitalOriginalViejo);
+
+                setInfoRenovacion({
+                    capitalOriginalViejo,
+                    interesViejo,
+                    montoTotalViejo,
+                    valorCuotaVieja,
+                    cuotasPagadasCount: pagadas.length,
+                    cuotasPendientesCount: pendientes.length,
+                    totalPagadoViejo,
+                    saldoDescontado,
+                    gananciaLiberada
+                });
+
+                if (pViejo.cliente_id && !clienteId) setClienteId(pViejo.cliente_id);
+                if (pViejo.cobrador) setCobrador(pViejo.cobrador);
+                setEsCapitalAjeno(Boolean(pViejo.es_capital_ajeno));
+            }
+        };
+
+        cargarDatosRenovacion();
+    }, [prestamoARenovar]);
+
+    const efectivoNetoEntregar = useMemo(() => {
+        if (!infoRenovacion || montoCapital === '') return null;
+        const nuevoCap = parseFloat(montoCapital) || 0;
+        return nuevoCap - infoRenovacion.saldoDescontado;
+    }, [infoRenovacion, montoCapital]);
 
     const handleCambiarTipoPrestamo = (nuevoTipo) => {
         setTipoPrestamo(nuevoTipo);
@@ -67,9 +130,6 @@ export default function NuevoPrestamo() {
         }
     };
 
-    // ----------------------------------------------------
-    // FUNCIONES ESTRICTAS EN UTC PARA EVITAR SALTOS DE DÍAS 
-    // ----------------------------------------------------
     const sumarDias = (fechaBaseStr, dias) => {
         const [a, m, d] = fechaBaseStr.split('-').map(Number);
         const fecha = new Date(Date.UTC(a, m - 1, d));
@@ -95,6 +155,11 @@ export default function NuevoPrestamo() {
 
         if (!clienteId || capital <= 0 || !fechaInicio) {
             alert("Por favor, ingrese valores válidos mayores a cero.");
+            return;
+        }
+
+        if (infoRenovacion && capital < infoRenovacion.saldoDescontado) {
+            alert(`El nuevo capital ($${capital.toFixed(2)}) no puede ser menor al saldo pendiente a descontar ($${infoRenovacion.saldoDescontado.toFixed(2)}).`);
             return;
         }
 
@@ -189,7 +254,12 @@ export default function NuevoPrestamo() {
                 const { data: prestamoViejo } = await supabase.from('prestamos').select('valor_cuota').eq('id', prestamoARenovar).single();
                 if (prestamoViejo) {
                     await supabase.from('historial_pagos')
-                        .update({ estado_cobro: 'renovado', monto_recibido: prestamoViejo.valor_cuota, fecha_cobro: fechaInicio })
+                        .update({
+                            estado_cobro: 'renovado',
+                            monto_recibido: prestamoViejo.valor_cuota,
+                            fecha_cobro: fechaInicio,
+                            fecha_pago_real: fechaInicio
+                        })
                         .eq('prestamo_id', prestamoARenovar).in('estado_cobro', ['pendiente', 'no_pago']);
                 }
             }
@@ -229,6 +299,39 @@ export default function NuevoPrestamo() {
                         {prestamoARenovar ? 'Renovar Préstamo' : 'Nuevo Préstamo'}
                     </h1>
                 </div>
+
+                {infoRenovacion && (
+                    <div className="bg-neutral-900 text-white p-4 rounded-2xl shadow-md border border-amber-500/40 space-y-2.5">
+                        <div className="flex justify-between items-center border-b border-neutral-800 pb-2">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">
+                                Liquidación por Renovación
+                            </span>
+                            <span className="text-[10px] font-bold text-neutral-400">
+                                {infoRenovacion.cuotasPagadasCount} pagadas / {infoRenovacion.cuotasPendientesCount} pend.
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="bg-neutral-800/80 p-2.5 rounded-xl">
+                                <span className="block text-[9px] uppercase font-bold text-neutral-400">Saldo Descontado</span>
+                                <span className="font-black text-amber-400 text-sm">-${infoRenovacion.saldoDescontado.toFixed(2)}</span>
+                            </div>
+                            <div className="bg-emerald-950/80 border border-emerald-700/40 p-2.5 rounded-xl">
+                                <span className="block text-[9px] uppercase font-bold text-emerald-300">Ganancia Liberada</span>
+                                <span className="font-black text-emerald-400 text-sm">+${infoRenovacion.gananciaLiberada.toFixed(2)}</span>
+                            </div>
+                        </div>
+                        {efectivoNetoEntregar !== null && (
+                            <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl p-2.5 flex justify-between items-center">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-amber-200">
+                                    Efectivo a Entregar en Mano:
+                                </span>
+                                <span className={`font-black text-base ${efectivoNetoEntregar >= 0 ? 'text-amber-400' : 'text-red-400'}`}>
+                                    ${efectivoNetoEntregar.toFixed(2)}
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-full h-1 bg-amber-500"></div>

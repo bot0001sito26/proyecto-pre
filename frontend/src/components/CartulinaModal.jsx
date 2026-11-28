@@ -1,32 +1,25 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import supabase from '../supabaseClient';
 import ConfirmModal from './ConfirmModal';
 import { generarCartulinaPDF } from '../utils/generarCartulinaPDF';
+import { calcularEstadoCapitalCuotaFija } from '../utils/finanzasCalculos';
 
-export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinalizar, onUpdate, fechaRuta }) {
+export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinalizar, onUpdate, fechaRuta, fechaDesde, fechaHasta }) {
     const [cuotas, setCuotas] = useState([]);
-    const [retirosCapital, setRetirosCapital] = useState([]);
     const [cargando, setCargando] = useState(true);
     const [cuotaParaNota, setCuotaParaNota] = useState(null);
 
     const [cobradorLocal, setCobradorLocal] = useState(prestamo?.cobrador || 'principal');
-    const [capitalActivoLocal, setCapitalActivoLocal] = useState(Number(prestamo?.monto_capital || 0));
     const [modalConf, setModalConf] = useState({ isOpen: false, titulo: '', mensaje: '', accion: null });
 
-    // Estados para visualización en Acordeones
     const [verMotivos, setVerMotivos] = useState(false);
     const [verCapital, setVerCapital] = useState(false);
-
-    // Estados para el retiro de capital parcial
-    const [montoRetiro, setMontoRetiro] = useState('');
-    const [mostrandoRetiro, setMostrandoRetiro] = useState(false);
 
     const esActivo = prestamo?.estado === 'activo';
 
     const getFechaLocal = () => new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
     const hoyStr = getFechaLocal();
 
-    // Obtener la fecha y hora local exacta en formato SQL (YYYY-MM-DD HH:MM:SS) para Ecuador
     const getTimestampLocalSQL = () => {
         const ahora = new Date();
         const offsetEcuador = -5 * 60;
@@ -36,11 +29,8 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
 
     useEffect(() => {
         if (prestamo?.id) {
-            fetchDatosCartulina();
+            fetchCuotas();
             setCobradorLocal(prestamo.cobrador || 'principal');
-            setCapitalActivoLocal(Number(prestamo.monto_capital || 0));
-            setMostrandoRetiro(false);
-            setMontoRetiro('');
             setCuotaParaNota(null);
         }
     }, [prestamo?.id]);
@@ -70,24 +60,14 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         }
     };
 
-    const fetchDatosCartulina = async () => {
+    const fetchCuotas = async () => {
         setCargando(true);
-        const [resCuotas, resRetiros] = await Promise.all([
-            supabase
-                .from('historial_pagos')
-                .select('*')
-                .eq('prestamo_id', prestamo.id)
-                .order('fecha_cobro', { ascending: true }),
-            supabase
-                .from('movimientos_mensuales')
-                .select('id, fecha, monto, notas')
-                .eq('prestamo_id', prestamo.id)
-                .eq('tipo', 'retiro_capital')
-                .order('fecha', { ascending: false })
-        ]);
-
-        if (resCuotas.data) setCuotas(resCuotas.data);
-        if (resRetiros.data) setRetirosCapital(resRetiros.data);
+        const { data } = await supabase
+            .from('historial_pagos')
+            .select('*')
+            .eq('prestamo_id', prestamo.id)
+            .order('fecha_cobro', { ascending: true });
+        if (data) setCuotas(data);
         setCargando(false);
     };
 
@@ -116,7 +96,13 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         setModalConf({ isOpen: false, accion: null });
         if (!esActivo) return;
 
-        const fechaOperacion = fechaRuta || hoyStr;
+        // Si auditas un mes distinto al actual (ej. diciembre), registra en la fecha de la cuota
+        const fechaEfectivaFiltro =
+            fechaDesde && fechaHasta
+                ? (hoyStr >= fechaDesde && hoyStr <= fechaHasta ? hoyStr : cuota.fecha_cobro)
+                : hoyStr;
+
+        const fechaOperacion = fechaRuta || fechaEfectivaFiltro;
         const monto = nuevoEstado === 'pagado' ? prestamo.valor_cuota : 0;
         const fechaPagoReal = nuevoEstado === 'pagado' ? fechaOperacion : null;
         const fechaRegistroExacta = nuevoEstado === 'pagado' ? getTimestampLocalSQL() : null;
@@ -133,7 +119,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         if (!error && onUpdate) {
             onUpdate();
         } else if (error) {
-            fetchDatosCartulina();
+            fetchCuotas();
         }
     };
 
@@ -160,7 +146,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         setModalConf({
             isOpen: true,
             titulo: 'Finalizar Crédito',
-            mensaje: '¿Seguro que deseas FINALIZAR este crédito? Las cuotas pendientes se marcarán como pagadas hoy y sumarán a tu Ganancia Real.',
+            mensaje: '¿Seguro que deseas FINALIZAR este crédito? Las cuotas pendientes se marcarán como pagadas hoy y el excedente sobre el capital sumará a tu Ganancia Real.',
             accion: () => { onFinalizar(); setModalConf({ isOpen: false }); }
         });
     };
@@ -175,82 +161,18 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
         });
     };
 
-    const confirmarRetiroCapital = () => {
-        if (!esActivo) return;
-        const retiroNum = parseFloat(montoRetiro);
-
-        if (!retiroNum || retiroNum <= 0) {
-            mostrarAlerta('Monto Inválido', 'El monto a retirar debe ser mayor a $0.');
-            return;
-        }
-
-        if (retiroNum > capitalActivoLocal) {
-            mostrarAlerta('Límite Excedido', `No puedes retirar más del capital activo ($${capitalActivoLocal.toFixed(2)}).`);
-            return;
-        }
-
-        setModalConf({
-            isOpen: true,
-            titulo: 'Extraer Capital Vivo',
-            mensaje: `Vas a retirar $${retiroNum.toFixed(2)}. Esto restará capital activo de este crédito sin afectar la deuda del cliente. ¿Continuar?`,
-            accion: () => ejecutarRetiroCapital(retiroNum)
-        });
-    };
-
-    const ejecutarRetiroCapital = async (monto) => {
-        setModalConf({ isOpen: false, accion: null });
-        if (!esActivo) return;
-
-        const registroRetiro = {
-            prestamo_id: prestamo.id,
-            fecha: hoyStr,
-            tipo: 'retiro_capital',
-            monto: monto,
-            notas: 'Retiro parcial de capital desde cartulina activa'
-        };
-
-        const { data: nuevoMov, error: errMov } = await supabase
-            .from('movimientos_mensuales')
-            .insert([registroRetiro])
-            .select('id, fecha, monto, notas')
-            .single();
-
-        if (errMov) {
-            mostrarAlerta('Error', 'Hubo un error al registrar el movimiento de retiro.');
-            return;
-        }
-
-        const nuevoCapital = Math.max(0, capitalActivoLocal - monto);
-
-        const { error } = await supabase.from('prestamos')
-            .update({ monto_capital: nuevoCapital })
-            .eq('id', prestamo.id);
-
-        if (!error) {
-            setMontoRetiro('');
-            setMostrandoRetiro(false);
-            setCapitalActivoLocal(nuevoCapital);
-            prestamo.monto_capital = nuevoCapital;
-
-            if (nuevoMov) {
-                setRetirosCapital(prev => [nuevoMov, ...prev]);
-            }
-            if (onUpdate) onUpdate();
-
-            mostrarAlerta('Retiro Exitoso', `$${monto.toFixed(2)} extraídos a caja. El Capital Activo de este préstamo ha bajado a $${nuevoCapital.toFixed(2)}.`);
-        } else {
-            mostrarAlerta('Error', 'Hubo un error al actualizar el capital del préstamo.');
-        }
-    };
-
     const cuotasConNotas = cuotas.filter(c => c.notas && c.notas.trim() !== '');
-    const cuotasPagadas = cuotas.filter(c => c.estado_cobro === 'pagado').length;
-    const dineroRecuperadoFisico = cuotasPagadas * prestamo.valor_cuota;
-
-    const totalCapitalExtraido = retirosCapital.reduce((sum, r) => sum + Number(r.monto || 0), 0);
-    const capitalOriginalCalculado = capitalActivoLocal + totalCapitalExtraido;
-
-    const deshabilitarRetiro = !esActivo || capitalActivoLocal <= 0;
+    const estadoCapital = useMemo(
+        () => calcularEstadoCapitalCuotaFija(prestamo, cuotas),
+        [prestamo, cuotas]
+    );
+    const cuotasPagadasCount = useMemo(
+        () => cuotas.filter(c => c.estado_cobro === 'pagado').length,
+        [cuotas]
+    );
+    const porcentajeCapitalRecuperado = estadoCapital.capitalOriginal > 0
+        ? Math.min(100, Math.round((estadoCapital.capitalRecuperado / estadoCapital.capitalOriginal) * 100))
+        : 100;
 
     return (
         <>
@@ -305,7 +227,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                             {cargando ? (
                                 <div className="flex justify-center py-8"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div></div>
                             ) : (
-                                <div className="grid grid-cols-6 md:grid-cols-7 gap-0 border-t-2 border-l-2 border-neutral-900">
+                                <div className="grid grid-cols-6 gap-0 border-t-2 border-l-2 border-neutral-900">
                                     {cuotas.map((c) => {
                                         let colorClase = 'bg-white text-neutral-900 hover:bg-neutral-100';
                                         if (c.estado_cobro === 'pagado') colorClase = 'bg-green-500 text-white shadow-inner hover:bg-green-600';
@@ -402,12 +324,7 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                             >
                                 <span className="text-[10px] font-black uppercase tracking-widest text-blue-900 flex items-center gap-2">
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                    Capital & Extracción
-                                    {totalCapitalExtraido > 0 && (
-                                        <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded text-[9px]">
-                                            Extraído: ${totalCapitalExtraido.toFixed(2)}
-                                        </span>
-                                    )}
+                                    Estado de Capital ({cuotasPagadasCount}/{cuotas.length} pagadas • Caja: ${estadoCapital.capitalRecuperado.toFixed(2)})
                                 </span>
                                 <span className="text-blue-900 font-bold text-xs">{verCapital ? '▲' : '▼'}</span>
                             </button>
@@ -416,81 +333,48 @@ export default function CartulinaModal({ prestamo, onClose, onRenovar, onFinaliz
                                 <div className="p-4 flex flex-col gap-3 border-t border-blue-200/50 animate-fade-in">
                                     <div className="grid grid-cols-2 gap-2 text-xs">
                                         <div className="bg-white/80 p-2.5 rounded-lg border border-blue-200/60">
-                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-600">Capital Inicial</span>
-                                            <span className="font-black text-blue-950 text-sm">${capitalOriginalCalculado.toFixed(2)}</span>
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-600">Capital Prestado</span>
+                                            <span className="font-black text-blue-950 text-sm">${estadoCapital.capitalOriginal.toFixed(2)}</span>
                                         </div>
                                         <div className="bg-white/80 p-2.5 rounded-lg border border-blue-200/60">
-                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-600">Total Recaudado</span>
-                                            <span className="font-black text-blue-950 text-sm">${dineroRecuperadoFisico.toFixed(2)}</span>
-                                        </div>
-                                        <div className="bg-emerald-50/90 p-2.5 rounded-lg border border-emerald-200">
-                                            <span className="block text-[9px] font-black uppercase tracking-wider text-emerald-700">Capital Extraído (Caja)</span>
-                                            <span className="font-black text-emerald-800 text-sm">${totalCapitalExtraido.toFixed(2)}</span>
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-600">
+                                                {estadoCapital.montoCruceRenovacion > 0 ? 'Recuperado (Cuotas + Cruce)' : 'En Caja (Recuperado)'}
+                                            </span>
+                                            <span className="font-black text-blue-950 text-sm">${estadoCapital.capitalRecuperado.toFixed(2)}</span>
                                         </div>
                                         <div className="bg-blue-100/70 p-2.5 rounded-lg border border-blue-300">
-                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-800">Capital Activo (Calle)</span>
-                                            <span className="font-black text-blue-950 text-sm">${capitalActivoLocal.toFixed(2)}</span>
+                                            <span className="block text-[9px] font-black uppercase tracking-wider text-blue-800">Pendiente en Calle</span>
+                                            <span className="font-black text-blue-950 text-sm">${estadoCapital.capitalEnCalle.toFixed(2)}</span>
+                                        </div>
+                                        <div className={`p-2.5 rounded-lg border ${estadoCapital.gananciaRealizada > 0 ? 'bg-emerald-50 border-emerald-300' : 'bg-white/60 border-gray-200'}`}>
+                                            <span className={`block text-[9px] font-black uppercase tracking-wider ${estadoCapital.gananciaRealizada > 0 ? 'text-emerald-700' : 'text-gray-500'}`}>
+                                                Ganancia Liberada
+                                            </span>
+                                            <span className={`font-black text-sm ${estadoCapital.gananciaRealizada > 0 ? 'text-emerald-800' : 'text-gray-600'}`}>
+                                                ${estadoCapital.gananciaRealizada.toFixed(2)}
+                                            </span>
                                         </div>
                                     </div>
 
-                                    {retirosCapital.length > 0 && (
-                                        <div className="bg-white rounded-lg border border-blue-200/70 p-2.5 space-y-1.5">
-                                            <span className="block text-[9px] font-black uppercase tracking-widest text-blue-800">
-                                                Extracciones Realizadas ({retirosCapital.length})
-                                            </span>
-                                            <div className="max-h-28 overflow-y-auto divide-y divide-gray-100 pr-1">
-                                                {retirosCapital.map((r) => (
-                                                    <div key={r.id} className="py-1.5 flex justify-between items-center text-xs first:pt-0.5 last:pb-0.5">
-                                                        <div className="flex flex-col">
-                                                            <span className="font-bold text-gray-700 text-[11px]">{r.fecha}</span>
-                                                            {r.notas && <span className="text-[9px] text-gray-400">{r.notas}</span>}
-                                                        </div>
-                                                        <span className="font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                                                            -${Number(r.monto).toFixed(2)}
-                                                        </span>
-                                                    </div>
-                                                ))}
-                                            </div>
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[9px] font-black uppercase tracking-wider text-blue-800">
+                                            <span>Recuperación de capital ({cuotasPagadasCount} cuotas pagadas = ${estadoCapital.dineroRecaudado.toFixed(2)})</span>
+                                            <span>{porcentajeCapitalRecuperado}%</span>
                                         </div>
-                                    )}
-
-                                    {!mostrandoRetiro || !esActivo ? (
-                                        <button
-                                            onClick={() => setMostrandoRetiro(true)}
-                                            disabled={deshabilitarRetiro}
-                                            className={`mt-1 bg-white border border-blue-300 text-blue-700 text-xs font-bold py-2.5 rounded-lg transition shadow-sm ${deshabilitarRetiro ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-100'}`}
-                                        >
-                                            Extraer Capital a Caja
-                                        </button>
-                                    ) : (
-                                        <div className="flex gap-2 mt-1 animate-fade-in">
-                                            <input
-                                                type="number" min="0" step="0.01"
-                                                value={montoRetiro}
-                                                onChange={(e) => {
-                                                    const val = e.target.value;
-                                                    if (val === '' || Number(val) >= 0) setMontoRetiro(val);
-                                                }}
-                                                placeholder="Monto ($)"
-                                                className="flex-1 border border-blue-300 rounded-lg p-2 text-xs font-bold outline-none focus:border-blue-500 bg-white"
-                                                autoFocus
-                                            />
-                                            <button
-                                                onClick={confirmarRetiroCapital}
-                                                className="bg-blue-600 text-white text-xs font-bold px-3 rounded-lg hover:bg-blue-700 transition shadow-sm"
-                                            >
-                                                Retirar
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => { setMostrandoRetiro(false); setMontoRetiro(''); }}
-                                                className="bg-white border border-blue-200 text-blue-700 text-xs font-bold px-2.5 rounded-lg hover:bg-blue-50 transition"
-                                                title="Cancelar"
-                                            >
-                                                ✕
-                                            </button>
+                                        <div className="w-full h-2 bg-blue-200/70 rounded-full overflow-hidden">
+                                            <div
+                                                className={`h-full transition-all duration-300 ${porcentajeCapitalRecuperado === 100 ? 'bg-emerald-500' : 'bg-blue-600'}`}
+                                                style={{ width: `${porcentajeCapitalRecuperado}%` }}
+                                            ></div>
                                         </div>
-                                    )}
+                                        <p className="text-[10px] font-medium text-blue-800/80 pt-0.5">
+                                            {estadoCapital.montoCruceRenovacion > 0
+                                                ? `Liquidado por renovación: $${estadoCapital.dineroRecaudado.toFixed(2)} en cuotas + $${estadoCapital.montoCruceRenovacion.toFixed(2)} descontados del nuevo préstamo.`
+                                                : estadoCapital.capitalEnCalle > 0
+                                                    ? `Faltan $${estadoCapital.capitalEnCalle.toFixed(2)} para cubrir el capital; luego cada cuota entra directo a ganancia.`
+                                                    : 'Capital 100% recuperado en caja. Las cuotas adicionales son ganancia neta.'}
+                                        </p>
+                                    </div>
                                 </div>
                             )}
                         </div>

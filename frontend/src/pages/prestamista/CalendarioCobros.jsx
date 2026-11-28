@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { generarReporteRutaPDF } from '../../utils/generarReporteRutaPDF';
 import CartulinaModal from '../../components/CartulinaModal';
 import LibretaInteresAbiertoModal from '../../components/LibretaInteresAbiertoModal';
+import { desglosarPagosCuotaFija } from '../../utils/finanzasCalculos';
 
 export default function CalendarioCobros() {
     const { user } = useAuth();
@@ -21,7 +22,7 @@ export default function CalendarioCobros() {
 
     const [clientesAgrupados, setClientesAgrupados] = useState(() => {
         try {
-            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v8'));
+            const cache = JSON.parse(sessionStorage.getItem('anubis_ruta_diaria_v9'));
             if (cache && cache.fecha === hoyStr) return cache.datos;
             return [];
         } catch { return []; }
@@ -42,7 +43,7 @@ export default function CalendarioCobros() {
             .select(`
                 id, fecha_cobro, estado_cobro, monto_recibido, notas, fecha_pago_real, fecha_registro,
                 prestamos!inner (
-                    id, valor_cuota, prestamista_id, estado, monto_total, monto_capital, frecuencia, fecha_inicio, cobrador, tipo_prestamo, es_capital_ajeno,
+                    id, valor_cuota, prestamista_id, estado, monto_total, monto_capital, interes_total, frecuencia, fecha_inicio, cobrador, tipo_prestamo, es_capital_ajeno,
                     clientes ( id, nombre, telefono )
                 )
             `)
@@ -54,6 +55,26 @@ export default function CalendarioCobros() {
         if (error) console.error("Error al cargar la ruta diaria:", error);
 
         if (data) {
+            // Obtener el historial liquidado completo de los préstamos en ruta para separar Caja vs Ganancia con exactitud
+            const prestamoIds = [...new Set(data.map(c => c.prestamos.id))];
+            const historialPorPrestamo = {};
+
+            if (prestamoIds.length > 0) {
+                const { data: cuotasLiquidadas } = await supabase
+                    .from('historial_pagos')
+                    .select('id, prestamo_id, fecha_cobro, fecha_pago_real, monto_recibido, estado_cobro')
+                    .in('prestamo_id', prestamoIds)
+                    .in('estado_cobro', ['pagado', 'renovado'])
+                    .range(0, 9999);
+
+                if (cuotasLiquidadas) {
+                    cuotasLiquidadas.forEach(c => {
+                        if (!historialPorPrestamo[c.prestamo_id]) historialPorPrestamo[c.prestamo_id] = [];
+                        historialPorPrestamo[c.prestamo_id].push(c);
+                    });
+                }
+            }
+
             const mapaClientes = {};
 
             data.forEach(cuota => {
@@ -73,6 +94,8 @@ export default function CalendarioCobros() {
                     mapaClientes[cId].prestamosMap[pId] = {
                         prestamoInfo: cuota.prestamos,
                         montoIngresadoFisicamenteHoy: 0,
+                        cajaHoy: 0,
+                        gananciaHoy: 0,
                         cuotasPagadasHoy: 0,
                         tieneCuotaProgramadaHoy: false,
                         estadoDisplay: 'pendiente',
@@ -112,8 +135,20 @@ export default function CalendarioCobros() {
                 const prestamosDelCliente = Object.values(clienteData.prestamosMap);
 
                 prestamosDelCliente.forEach(p => {
-                    if (p.montoIngresadoFisicamenteHoy > 0) p.estadoDisplay = 'pagado';
-                    else if (p.tieneCuotaProgramadaHoy && p.estadoDisplay === 'pagado') p.estadoDisplay = 'al_dia';
+                    if (p.montoIngresadoFisicamenteHoy > 0) {
+                        p.estadoDisplay = 'pagado';
+
+                        if (!p.prestamoInfo.es_capital_ajeno) {
+                            const historialCompleto = historialPorPrestamo[p.prestamoInfo.id] || [];
+                            const desglose = desglosarPagosCuotaFija(p.prestamoInfo, historialCompleto);
+                            const movimientosHoy = desglose.filter(d => d.fecha === fecha && !d.esRenovacion);
+
+                            p.cajaHoy = movimientosHoy.reduce((sum, d) => sum + d.parteCapital, 0);
+                            p.gananciaHoy = movimientosHoy.reduce((sum, d) => sum + d.parteGanancia, 0);
+                        }
+                    } else if (p.tieneCuotaProgramadaHoy && p.estadoDisplay === 'pagado') {
+                        p.estadoDisplay = 'al_dia';
+                    }
                 });
 
                 const estados = prestamosDelCliente.map(p => p.estadoDisplay);
@@ -135,7 +170,7 @@ export default function CalendarioCobros() {
             });
 
             setClientesAgrupados(arrayClientes);
-            sessionStorage.setItem('anubis_ruta_diaria_v8', JSON.stringify({ fecha: fecha, datos: arrayClientes }));
+            sessionStorage.setItem('anubis_ruta_diaria_v9', JSON.stringify({ fecha: fecha, datos: arrayClientes }));
         }
         setCargando(false);
     };
@@ -174,15 +209,32 @@ export default function CalendarioCobros() {
         });
     }, [clientesPorCobrador, busqueda]);
 
-    // Los totales siguen reflejando la ruta completa del cobrador seleccionado aunque estés filtrando por nombre
-    let totalEsperado = 0;
-    let totalCobrado = 0;
-    clientesPorCobrador.forEach(c => {
-        c.listaPrestamos.forEach(p => {
-            if (p.tieneCuotaProgramadaHoy) totalEsperado += Number(p.prestamoInfo.valor_cuota);
-            totalCobrado += p.montoIngresadoFisicamenteHoy;
+    // Totales de la ruta del cobrador seleccionado: Esperado, Cobrado, Caja (Capital) y Ganancia
+    const { totalEsperado, totalCobrado, totalCajaHoy, totalGananciaHoy } = useMemo(() => {
+        let esperado = 0;
+        let cobrado = 0;
+        let caja = 0;
+        let ganancia = 0;
+
+        clientesPorCobrador.forEach(c => {
+            c.listaPrestamos.forEach(p => {
+                if (cobradorActivo !== 'todos' && (p.prestamoInfo.cobrador || 'principal') !== cobradorActivo) {
+                    return;
+                }
+                if (p.tieneCuotaProgramadaHoy) esperado += Number(p.prestamoInfo.valor_cuota);
+                cobrado += p.montoIngresadoFisicamenteHoy;
+                caja += Number(p.cajaHoy || 0);
+                ganancia += Number(p.gananciaHoy || 0);
+            });
         });
-    });
+
+        return {
+            totalEsperado: esperado,
+            totalCobrado: cobrado,
+            totalCajaHoy: caja,
+            totalGananciaHoy: ganancia
+        };
+    }, [clientesPorCobrador, cobradorActivo]);
 
     const descargarPDF = () => {
         const tituloSecundario = cobradorActivo === 'todos' ? 'Global' : cobradorActivo === 'ayudante' ? 'Ayudante' : 'Mis Cobros';
@@ -206,6 +258,7 @@ export default function CalendarioCobros() {
             id: pInfo.id,
             monto_total: pInfo.monto_total,
             monto_capital: pInfo.monto_capital || pInfo.monto_total,
+            interes_total: pInfo.interes_total || 0,
             frecuencia: pInfo.frecuencia,
             fecha_inicio: pInfo.fecha_inicio,
             estado: pInfo.estado,
@@ -264,7 +317,6 @@ export default function CalendarioCobros() {
                             </button>
                         </div>
 
-                        {/* Buscador minimalista */}
                         <div className="relative">
                             <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
@@ -297,6 +349,25 @@ export default function CalendarioCobros() {
                         <div className="text-right">
                             <p className="text-amber-500 font-bold uppercase text-[10px] tracking-widest">Cobrado Hoy</p>
                             <p className="font-black text-xl text-amber-500">${totalCobrado.toFixed(2)}</p>
+                        </div>
+                    </div>
+
+                    {/* Desglose automático de lo cobrado hoy: Caja (Capital) vs Ganancia */}
+                    <div className="grid grid-cols-2 gap-2.5 mt-3 pt-3 border-t border-gray-100">
+                        <div className="bg-blue-50/80 border border-blue-200/80 rounded-xl p-2.5 flex items-center justify-between">
+                            <div>
+                                <p className="text-[9px] font-black uppercase tracking-widest text-blue-700">Para Caja</p>
+                                <span className="block text-[9px] font-semibold text-blue-600/80">Capital recuperado</span>
+                            </div>
+                            <p className="font-black text-base text-blue-900">${totalCajaHoy.toFixed(2)}</p>
+                        </div>
+
+                        <div className="bg-emerald-50/80 border border-emerald-200/80 rounded-xl p-2.5 flex items-center justify-between">
+                            <div>
+                                <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Para Ganancia</p>
+                                <span className="block text-[9px] font-semibold text-emerald-600/80">Utilidad libre</span>
+                            </div>
+                            <p className="font-black text-base text-emerald-700">+${totalGananciaHoy.toFixed(2)}</p>
                         </div>
                     </div>
                 </div>
@@ -339,7 +410,7 @@ export default function CalendarioCobros() {
                                         <div key={p.prestamoInfo.id} className="flex justify-between items-center bg-gray-50/70 p-2.5 rounded-lg border border-gray-100">
                                             <div className="flex flex-col">
                                                 <span className="text-xs font-black text-gray-700">Crédito ${p.prestamoInfo.monto_total}</span>
-                                                <div className="flex items-center gap-2 mt-0.5">
+                                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                                                     <span className="text-[10px] font-bold text-gray-500">
                                                         Cuota: ${p.prestamoInfo.valor_cuota}
                                                     </span>
@@ -348,6 +419,20 @@ export default function CalendarioCobros() {
                                                     )}
                                                     {p.prestamoInfo.es_capital_ajeno && (
                                                         <span className="text-[8px] font-black uppercase bg-purple-100 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded shadow-sm">A</span>
+                                                    )}
+                                                    {!p.prestamoInfo.es_capital_ajeno && p.montoIngresadoFisicamenteHoy > 0 && (
+                                                        <>
+                                                            {p.cajaHoy > 0 && (
+                                                                <span className="text-[8px] font-black uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">
+                                                                    Caja: ${p.cajaHoy.toFixed(2)}
+                                                                </span>
+                                                            )}
+                                                            {p.gananciaHoy > 0 && (
+                                                                <span className="text-[8px] font-black uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">
+                                                                    Ganancia: +${p.gananciaHoy.toFixed(2)}
+                                                                </span>
+                                                            )}
+                                                        </>
                                                     )}
                                                 </div>
                                             </div>

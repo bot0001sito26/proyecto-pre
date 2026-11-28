@@ -8,8 +8,29 @@ import ClienteAcordeon from '../../components/ClienteAcordeon';
 import { generarReporteCarteraPDF } from '../../utils/generarReporteCarteraPDF';
 import { generarReporteCajaPDF } from '../../utils/generarReporteCajaPDF';
 import { generarReporteGananciasPDF } from '../../utils/generarReporteGananciasPDF';
+import {
+    calcularEstadoCapitalCuotaFija,
+    desglosarPagosCuotaFija
+} from '../../utils/finanzasCalculos';
 
 const ACORDEONES_POR_PAGINA = 15;
+
+// Descarga todas las filas en lotes de 1000 para evitar el límite por defecto de Supabase
+async function fetchAllRows(buildQuery) {
+    const pageSize = 1000;
+    let from = 0;
+    let allData = [];
+
+    while (true) {
+        const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+        if (error || !data) break;
+        allData = allData.concat(data);
+        if (data.length < pageSize) break;
+        from += pageSize;
+    }
+
+    return allData;
+}
 
 export default function ListaPrestamos() {
     const { user } = useAuth();
@@ -17,23 +38,26 @@ export default function ListaPrestamos() {
     const location = useLocation();
 
     const hoy = new Date();
-    const primerDiaMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
-    const hoyStr = hoy.toISOString().split('T')[0];
+    const getFechaLocal = (f = new Date()) =>
+        new Date(f.getTime() - f.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+
+    const primerDiaMes = getFechaLocal(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+    const hoyStr = getFechaLocal(hoy);
 
     const [fechaDesde, setFechaDesde] = useState(primerDiaMes);
     const [fechaHasta, setFechaHasta] = useState(hoyStr);
     const [busqueda, setBusqueda] = useState('');
     const [pagina, setPagina] = useState(1);
-    const [mostrarValores, setMostrarValores] = useState(false); // Estado de censura
+    const [mostrarValores, setMostrarValores] = useState(false);
 
     const [prestamos, setPrestamos] = useState(() => {
-        try { return JSON.parse(sessionStorage.getItem('anubis_prestamos')) || []; } catch { return []; }
+        try { return JSON.parse(sessionStorage.getItem('anubis_prestamos_v3')) || []; } catch { return []; }
     });
-    const [pagosRango, setPagosRango] = useState(() => {
-        try { return JSON.parse(sessionStorage.getItem('anubis_pagos_rango')) || []; } catch { return []; }
+    const [pagosLiquidados, setPagosLiquidados] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem('anubis_pagos_liquidados_v3')) || []; } catch { return []; }
     });
-    const [movimientosRango, setMovimientosRango] = useState(() => {
-        try { return JSON.parse(sessionStorage.getItem('anubis_movimientos_rango')) || []; } catch { return []; }
+    const [movimientosLibreta, setMovimientosLibreta] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem('anubis_movimientos_v3')) || []; } catch { return []; }
     });
 
     const [cargando, setCargando] = useState(true);
@@ -55,51 +79,65 @@ export default function ListaPrestamos() {
 
     useEffect(() => {
         if (user?.id) fetchDatosDashboard();
-    }, [user, fechaDesde, fechaHasta]);
+    }, [user]);
 
     const fetchDatosDashboard = async () => {
         setCargando(true);
 
-        const { data: dataPrestamos } = await supabase
-            .from('prestamos')
-            .select(`
-                id, monto_capital, interes_total, monto_total, saldo_pendiente, 
-                frecuencia, valor_cuota, fecha_inicio, estado, cliente_id, tipo_prestamo, cobrador, es_capital_ajeno,
-                clientes ( id, nombre, telefono )
-            `)
-            .eq('prestamista_id', user.id)
-            .order('fecha_registro', { ascending: false });
+        const [dataPrestamos, dataPagos, dataMovimientos] = await Promise.all([
+            fetchAllRows(() =>
+                supabase
+                    .from('prestamos')
+                    .select(`
+                        id, monto_capital, interes_total, monto_total, saldo_pendiente, 
+                        frecuencia, valor_cuota, fecha_inicio, estado, cliente_id, tipo_prestamo, cobrador, es_capital_ajeno,
+                        clientes ( id, nombre, telefono )
+                    `)
+                    .eq('prestamista_id', user.id)
+                    .order('fecha_registro', { ascending: false })
+            ),
+            fetchAllRows(() =>
+                supabase
+                    .from('historial_pagos')
+                    .select(`
+                        id, prestamo_id, fecha_cobro, fecha_pago_real, monto_recibido, estado_cobro,
+                        prestamos!inner ( prestamista_id )
+                    `)
+                    .eq('prestamos.prestamista_id', user.id)
+                    .in('estado_cobro', ['pagado', 'renovado'])
+            ),
+            fetchAllRows(() =>
+                supabase
+                    .from('movimientos_mensuales')
+                    .select(`
+                        id, prestamo_id, fecha, tipo, monto,
+                        prestamos!inner ( prestamista_id, es_capital_ajeno )
+                    `)
+                    .eq('prestamos.prestamista_id', user.id)
+                    .in('tipo', ['pago_interes', 'abono_capital'])
+            )
+        ]);
 
-        const { data: dataPagos } = await supabase
-            .from('historial_pagos')
-            .select(`monto_recibido, estado_cobro, prestamos!inner ( id, interes_total, monto_total, prestamista_id, estado, es_capital_ajeno )`)
-            .eq('prestamos.prestamista_id', user.id)
-            .in('estado_cobro', ['pagado', 'renovado'])
-            .gte('fecha_cobro', fechaDesde)
-            .lte('fecha_cobro', fechaHasta);
+        setPrestamos(dataPrestamos);
+        sessionStorage.setItem('anubis_prestamos_v3', JSON.stringify(dataPrestamos));
 
-        const { data: dataMovimientos } = await supabase
-            .from('movimientos_mensuales')
-            .select(`monto, prestamos!inner ( prestamista_id, es_capital_ajeno )`)
-            .eq('prestamos.prestamista_id', user.id)
-            .eq('tipo', 'pago_interes')
-            .gte('fecha', fechaDesde)
-            .lte('fecha', fechaHasta);
+        setPagosLiquidados(dataPagos);
+        sessionStorage.setItem('anubis_pagos_liquidados_v3', JSON.stringify(dataPagos));
 
-        if (dataPrestamos) {
-            setPrestamos(dataPrestamos);
-            sessionStorage.setItem('anubis_prestamos', JSON.stringify(dataPrestamos));
-        }
-        if (dataPagos) {
-            setPagosRango(dataPagos);
-            sessionStorage.setItem('anubis_pagos_rango', JSON.stringify(dataPagos));
-        }
-        if (dataMovimientos) {
-            setMovimientosRango(dataMovimientos);
-            sessionStorage.setItem('anubis_movimientos_rango', JSON.stringify(dataMovimientos));
-        }
+        setMovimientosLibreta(dataMovimientos);
+        sessionStorage.setItem('anubis_movimientos_v3', JSON.stringify(dataMovimientos));
+
         setCargando(false);
     };
+
+    const pagosPorPrestamo = useMemo(() => {
+        const mapa = {};
+        pagosLiquidados.forEach(pago => {
+            if (!mapa[pago.prestamo_id]) mapa[pago.prestamo_id] = [];
+            mapa[pago.prestamo_id].push(pago);
+        });
+        return mapa;
+    }, [pagosLiquidados]);
 
     const prestamosEnRango = useMemo(() => {
         return prestamos.filter(p => p.fecha_inicio >= fechaDesde && p.fecha_inicio <= fechaHasta);
@@ -109,38 +147,57 @@ export default function ListaPrestamos() {
         return prestamos.filter(p => p.estado === 'activo');
     }, [prestamos]);
 
-    const capitalActivoTotal = useMemo(() => {
-        return todosLosActivos
-            .filter(p => !p.es_capital_ajeno) // Filtro: Solo dinero propio
-            .reduce((sum, p) => sum + Number(p.monto_capital), 0);
-    }, [todosLosActivos]);
+    const resumenFinanciero = useMemo(() => {
+        let capitalEnCallePropio = 0;
+        let cajaDisponibleAutomatica = 0;
+        let gananciaTotalRango = 0;
 
-    const interesGanadoRango = useMemo(() => {
-        const prestamosContabilizados = new Set();
-        let ganancia = 0;
+        prestamos.forEach(p => {
+            const esAjeno = Boolean(p.es_capital_ajeno);
+            if (esAjeno) return;
 
-        pagosRango.forEach(pago => {
-            const prestamo = pago.prestamos;
-            if (prestamo.estado === 'completado' || prestamo.estado === 'renovado') {
-                if (!prestamo.es_capital_ajeno && !prestamosContabilizados.has(prestamo.id)) { // Filtro
-                    prestamosContabilizados.add(prestamo.id);
-                    ganancia += Number(prestamo.interes_total);
+            if (p.tipo_prestamo === 'mensual_interes') {
+                if (p.estado === 'activo') {
+                    capitalEnCallePropio += Math.max(0, Number(p.monto_capital || 0));
                 }
+            } else {
+                const cuotasDelPrestamo = pagosPorPrestamo[p.id] || [];
+                const estadoCap = calcularEstadoCapitalCuotaFija(p, cuotasDelPrestamo);
+
+                if (p.estado === 'activo') {
+                    capitalEnCallePropio += estadoCap.capitalEnCalle;
+                    cajaDisponibleAutomatica += estadoCap.capitalRecuperado;
+                }
+
+                const desglose = desglosarPagosCuotaFija(p, cuotasDelPrestamo);
+                desglose.forEach(item => {
+                    if (item.fecha >= fechaDesde && item.fecha <= fechaHasta) {
+                        gananciaTotalRango += item.parteGanancia;
+                    }
+                });
             }
         });
 
-        movimientosRango.forEach(mov => {
-            if (!mov.prestamos.es_capital_ajeno) { // Filtro
-                ganancia += Number(mov.monto);
+        movimientosLibreta.forEach(mov => {
+            const esAjeno = Boolean(mov.prestamos?.es_capital_ajeno);
+            if (esAjeno) return;
+
+            if (mov.tipo === 'pago_interes' && mov.fecha >= fechaDesde && mov.fecha <= fechaHasta) {
+                gananciaTotalRango += Number(mov.monto || 0);
             }
         });
 
-        return ganancia;
-    }, [pagosRango, movimientosRango]);
+        return {
+            capitalEnCallePropio,
+            cajaDisponible: cajaDisponibleAutomatica,
+            gananciaRango: gananciaTotalRango
+        };
+    }, [prestamos, pagosPorPrestamo, movimientosLibreta, fechaDesde, fechaHasta]);
 
     const clientesAgrupados = useMemo(() => {
         const mapa = {};
         prestamos.forEach(p => {
+            if (!p.clientes) return;
             const clienteId = p.clientes.id;
             if (!mapa[clienteId]) mapa[clienteId] = { ...p.clientes, prestamos: [] };
             mapa[clienteId].prestamos.push(p);
@@ -156,11 +213,16 @@ export default function ListaPrestamos() {
     };
 
     const finalizarPrestamo = async () => {
-        await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0 }).eq('id', prestamoSeleccionado.id);
+        await supabase.from('prestamos').update({ estado: 'completado', saldo_pendiente: 0, fecha_cierre: hoyStr }).eq('id', prestamoSeleccionado.id);
 
         if (prestamoSeleccionado.tipo_prestamo === 'cuota_fija') {
-            await supabase.from('historial_pagos').update({ estado_cobro: 'pagado', monto_recibido: prestamoSeleccionado.valor_cuota, fecha_cobro: hoyStr })
-                .eq('prestamo_id', prestamoSeleccionado.id).in('estado_cobro', ['pendiente', 'no_pago']);
+            await supabase.from('historial_pagos').update({
+                estado_cobro: 'pagado',
+                monto_recibido: prestamoSeleccionado.valor_cuota,
+                fecha_pago_real: hoyStr
+            })
+                .eq('prestamo_id', prestamoSeleccionado.id)
+                .in('estado_cobro', ['pendiente', 'no_pago']);
         }
         setPrestamoSeleccionado(null);
         fetchDatosDashboard();
@@ -232,18 +294,29 @@ export default function ListaPrestamos() {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
                         <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 transition-all">
-                            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-1">Capital Total Activo</p>
+                            <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-1">Capital en Calle</p>
                             <p className={`text-xl font-black ${mostrarValores ? 'text-neutral-800' : 'text-gray-400'}`}>
-                                {mostrarValores ? `$${capitalActivoTotal.toFixed(2)}` : '$ ***.**'}
+                                {mostrarValores ? `$${resumenFinanciero.capitalEnCallePropio.toFixed(2)}` : '$ ***.**'}
                             </p>
+                            <span className="block text-[9px] font-bold text-gray-400 mt-1">Por recuperar</span>
                         </div>
+
+                        <div className="bg-blue-50/70 p-4 rounded-xl border border-blue-200 transition-all">
+                            <p className="text-[9px] font-black text-blue-700 uppercase tracking-widest mb-1">Caja Disponible</p>
+                            <p className={`text-xl font-black ${mostrarValores ? 'text-blue-900' : 'text-blue-300'}`}>
+                                {mostrarValores ? `$${resumenFinanciero.cajaDisponible.toFixed(2)}` : '$ ***.**'}
+                            </p>
+                            <span className="block text-[9px] font-bold text-blue-600 mt-1">Capital recuperado</span>
+                        </div>
+
                         <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 shadow-sm transition-all">
                             <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1">Ganancia en Fechas</p>
                             <p className={`text-xl font-black ${mostrarValores ? 'text-amber-600' : 'text-amber-300'}`}>
-                                {mostrarValores ? `$${interesGanadoRango.toFixed(2)}` : '$ ***.**'}
+                                {mostrarValores ? `$${resumenFinanciero.gananciaRango.toFixed(2)}` : '$ ***.**'}
                             </p>
+                            <span className="block text-[9px] font-bold text-amber-600/80 mt-1">Utilidad liberada</span>
                         </div>
                     </div>
                 </div>
@@ -295,6 +368,8 @@ export default function ListaPrestamos() {
                         onRenovar={renovarPrestamo}
                         onFinalizar={finalizarPrestamo}
                         onUpdate={fetchDatosDashboard}
+                        fechaDesde={fechaDesde}
+                        fechaHasta={fechaHasta}
                     />
                 )
             )}
